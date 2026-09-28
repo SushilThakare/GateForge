@@ -1,0 +1,97 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database - Primary relational store for API keys, rate limit rules, and logs
+  postgres:
+    image: postgres:16-alpine
+    container_name: gateforge_postgres
+    restart: always
+    environment:
+      POSTGRES_USER: gateforge_user
+      POSTGRES_PASSWORD: gateforge_password
+      POSTGRES_DB: gateforge_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gateforge_user -d gateforge_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Redis Store - In-memory database for ultra-low latency sliding window rate limit counters & BullMQ job queues
+  redis:
+    image: redis:7-alpine
+    container_name: gateforge_redis
+    restart: always
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Gateway Service - Low-latency Express + TypeScript proxy server evaluating rate limits
+  gateway:
+    build:
+      context: .
+      dockerfile: packages/gateway/Dockerfile
+    container_name: gateforge_gateway
+    restart: always
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: development
+      GATEWAY_PORT: 3000
+      DATABASE_URL: "postgresql://gateforge_user:gateforge_password@postgres:5432/gateforge_db?schema=public"
+      REDIS_HOST: "redis"
+      REDIS_PORT: 6379
+      REDIS_URL: "redis://redis:6379"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # Worker Service - Asynchronous BullMQ consumer reading telemetry off Redis queue to persist logs into Postgres
+  worker:
+    build:
+      context: .
+      dockerfile: packages/worker/Dockerfile
+    container_name: gateforge_worker
+    restart: always
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: "postgresql://gateforge_user:gateforge_password@postgres:5432/gateforge_db?schema=public"
+      REDIS_HOST: "redis"
+      REDIS_PORT: 6379
+      REDIS_URL: "redis://redis:6379"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # Dashboard Service - Next.js 14 App Router web analytics UI & gateway management panel
+  dashboard:
+    build:
+      context: .
+      dockerfile: packages/dashboard/Dockerfile
+    container_name: gateforge_dashboard
+    restart: always
+    ports:
+      - "3001:3001"
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: "postgresql://gateforge_user:gateforge_password@postgres:5432/gateforge_db?schema=public"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  redis_data:

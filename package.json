@@ -1,0 +1,39 @@
+{
+  "name": "gateforge-monorepo",
+  "version": "1.0.0",
+  "private": true,
+  "description": "GateForge — An intelligent rate-limited API gateway monorepo",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:gateway": "npm run dev --workspace=packages/gateway",
+    "dev:worker": "npm run dev --workspace=packages/worker",
+    "dev:dashboard": "npm run dev --workspace=packages/dashboard",
+    "build": "npx prisma generate && npm run build --workspaces",
+    "db:generate": "npx prisma generate",
+    "db:push": "npx prisma db push",
+    "db:seed": "npx prisma db seed"
+  },
+  "prisma": {
+    "seed": "npx tsx prisma/seed.ts"
+  },
+  "devDependencies": {
+    "prisma": "^5.10.0",
+    "tsx": "^4.7.1",
+    "typescript": "^5.3.3"
+  },
+  "dependencies": {
+    "@prisma/client": "^5.10.0"
+  },
+  "keywords": [
+    "api-gateway",
+    "rate-limiting",
+    "monorepo",
+    "express",
+    "bullmq",
+    "nextjs"
+  ],
+  "author": "",
+  "license": "ISC"
+}

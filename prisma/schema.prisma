@@ -1,0 +1,69 @@
+// Prisma Schema for GateForge API Gateway
+// Configures database connection and data models for key management, rate limiting, and request logs.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/// Scope permissions assigned to API keys for fine-grained authorization
+enum ApiKeyScope {
+  READ
+  WRITE
+  ADMIN
+}
+
+/// Algorithm strategy used for rate limiting check
+enum RateLimitStrategy {
+  FIXED_WINDOW
+  SLIDING_WINDOW
+  TOKEN_BUCKET
+}
+
+/// Represents an API client key authorized to pass through the gateway
+model ApiKey {
+  id              String            @id @default(uuid())
+  key             String            @unique
+  name            String
+  scopes          ApiKeyScope[]     @default([READ])
+  isActive        Boolean           @default(true)
+  rateLimit       Int               @default(100) // Allowed requests per minute
+  lastUsedAt      DateTime?
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+  rateLimitConfig RateLimitConfig?
+  requestLogs     RequestLog[]
+}
+
+/// Rate limiting rule attached to an API key
+model RateLimitConfig {
+  id            String            @id @default(uuid())
+  apiKeyId      String            @unique
+  apiKey        ApiKey            @relation(fields: [apiKeyId], references: [id], onDelete: Cascade)
+  windowSeconds Int               @default(60)
+  maxRequests   Int               @default(100)
+  strategy      RateLimitStrategy @default(SLIDING_WINDOW)
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+}
+
+/// Asynchronously processed request telemetry log entry
+model RequestLog {
+  id             String   @id @default(uuid())
+  apiKeyId       String?
+  apiKey         ApiKey?  @relation(fields: [apiKeyId], references: [id], onDelete: SetNull)
+  path           String
+  method         String
+  statusCode     Int
+  responseTimeMs Int
+  ipAddress      String
+  userAgent      String?
+  timestamp      DateTime @default(now())
+
+  @@index([apiKeyId, timestamp])
+  @@index([timestamp])
+}
