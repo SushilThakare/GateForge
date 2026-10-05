@@ -6,8 +6,9 @@
  * 1. Body Parsing (JSON)
  * 2. Unauthenticated endpoints (/health)
  * 3. API Key Authentication (apiKeyAuth)
- * 4. Administrative Management Routes (/api/keys guarded by ADMIN scope)
- * 5. Downstream Proxy & Upstream Forwarding (/v1/proxy/*)
+ * 4. Sliding Window Rate Limiter (rateLimitMiddleware)
+ * 5. Administrative Management Routes (/api/keys guarded by ADMIN scope)
+ * 6. Downstream Proxy & Upstream Forwarding (/v1/proxy/*)
  */
 
 import express, { Express, Request, Response, NextFunction } from 'express';
@@ -16,6 +17,7 @@ import { ApiKeyScope } from '@prisma/client';
 import { apiKeyAuth } from './auth/apiKeyAuth.js';
 import { requireScope } from './auth/requireScope.js';
 import { keyRouter } from './routes/keyRoutes.js';
+import { rateLimitMiddleware } from './rateLimit/rateLimitMiddleware.js';
 import { prisma } from './lib/prisma.js';
 import { redis } from './lib/redis.js';
 
@@ -70,7 +72,12 @@ export async function startGatewayServer(): Promise<void> {
     // Validates caller identity against Redis / PostgreSQL BEFORE allowing access to downstream services
     app.use(apiKeyAuth);
 
-    // 4. Key Management Endpoints (Requires ADMIN scope)
+    // 4. Sliding Window Rate Limiter
+    // Checks per-API-key request quotas atomically using a Redis ZSET + Lua script.
+    // Must run after apiKeyAuth so req.apiKey (keyId, limit) is available.
+    app.use(rateLimitMiddleware);
+
+    // 5. Key Management Endpoints (Requires ADMIN scope)
     app.use('/api/keys', requireScope(ApiKeyScope.ADMIN), keyRouter);
 
     // 5. Downstream Proxy Route Handler (Stub representing upstream service proxy forwarding)
