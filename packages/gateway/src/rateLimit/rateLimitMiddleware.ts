@@ -1,30 +1,39 @@
 /**
  * @file packages/gateway/src/rateLimit/rateLimitMiddleware.ts
- * @description Express middleware that enforces per-API-key rate limiting using the
- * sliding window algorithm. Positioned in the middleware chain AFTER apiKeyAuth
- * so that req.apiKey is guaranteed to be populated before this runs.
+ * @description Express middleware that enforces per-API-key rate limiting.
+ * Dispatches to the algorithm configured for each key:
+ *   - SLIDING_WINDOW (default) → checkSlidingWindow (Redis ZSET)
+ *   - TOKEN_BUCKET             → checkTokenBucket   (Redis Hash)
+ *   - FIXED_WINDOW             → falls back to sliding window (future extension point)
  *
- * On rejection (HTTP 429) the response includes:
- *   - Retry-After header: seconds until the window resets
- *   - X-RateLimit-Limit: the configured limit
- *   - X-RateLimit-Remaining: remaining slots (0 on rejection)
- *   - X-RateLimit-Reset: Unix epoch (ms) when the window resets
+ * Positioned in the middleware chain AFTER apiKeyAuth so req.apiKey is guaranteed
+ * to be populated with both the key metadata AND its rateLimitConfig.
+ *
+ * HTTP response headers emitted on every request:
+ *   X-RateLimit-Limit      → configured limit / capacity
+ *   X-RateLimit-Remaining  → remaining requests / tokens
+ *   X-RateLimit-Reset      → Unix epoch ms when quota resets
+ *   Retry-After            → seconds to wait (only on 429)
  */
 
 import { Request, Response, NextFunction } from 'express';
 import { checkSlidingWindow } from './slidingWindow.js';
+import { checkTokenBucket } from './tokenBucket.js';
+
+
+
 
 /**
- * Default window duration: 60 seconds expressed in milliseconds.
- * The window size could also come from per-key config in the future.
- */
-const DEFAULT_WINDOW_MS = 60_000;
-
-/**
- * Express middleware that checks the sliding window rate limit for the
- * authenticated API key attached to the request by apiKeyAuth.
+ * Express middleware that reads req.apiKey.rateLimitConfig to determine which
+ * rate limiting algorithm to apply, then enforces the configured limit.
  *
- * @param {Request} req - Express request (must have req.apiKey populated)
+ * Algorithm dispatch logic:
+ *   1. If rateLimitConfig exists with strategy TOKEN_BUCKET → use token bucket
+ *      (requires capacity and refillRate; falls back to sliding window if missing)
+ *   2. Otherwise → use sliding window (covers SLIDING_WINDOW, FIXED_WINDOW, and
+ *      the legacy rateLimit field with no config row)
+ *
+ * @param {Request} req - Express request (must have req.apiKey populated by apiKeyAuth)
  * @param {Response} res - Express response
  * @param {NextFunction} next - Next middleware callback
  * @returns {Promise<void>}
@@ -34,31 +43,59 @@ export async function rateLimitMiddleware(
   res: Response,
   next: NextFunction
 ): Promise<void> {
-  // apiKeyAuth always runs before this middleware, so req.apiKey should always exist.
-  // Guard defensively anyway to satisfy TypeScript strict null checks.
+  // apiKeyAuth always runs before this; guard defensively for type safety
   if (!req.apiKey) {
     res.status(401).json({ error: 'Unauthorized', message: 'API key context missing.' });
     return;
   }
 
-  const { id: keyId, rateLimit: limit } = req.apiKey;
+  const { id: keyId, rateLimit, rateLimitConfig } = req.apiKey;
 
   try {
-    const result = await checkSlidingWindow(keyId, limit, DEFAULT_WINDOW_MS);
+    let result;
+    let displayLimit: number;
 
-    // Attach standard rate limit headers regardless of allow/reject decision
-    res.setHeader('X-RateLimit-Limit', limit);
+    // ── ALGORITHM DISPATCH ──────────────────────────────────────────────────
+    const strategy = rateLimitConfig?.strategy ?? 'SLIDING_WINDOW';
+
+    if (
+      strategy === 'TOKEN_BUCKET' &&
+      rateLimitConfig?.capacity != null &&
+      rateLimitConfig?.refillRate != null
+    ) {
+      // TOKEN BUCKET: burst-friendly, continuous refill
+      // displayLimit = capacity (how many tokens fit in the bucket at once)
+      displayLimit = rateLimitConfig.capacity;
+      result = await checkTokenBucket(keyId, {
+        capacity: rateLimitConfig.capacity,
+        refillRate: rateLimitConfig.refillRate,
+      });
+    } else {
+      // SLIDING WINDOW (default) — also used as fallback for FIXED_WINDOW
+      // and for token-bucket configs missing capacity/refillRate values
+      const limit = rateLimitConfig?.maxRequests ?? rateLimit;
+      const windowMs = (rateLimitConfig?.windowSeconds ?? 60) * 1000;
+      displayLimit = limit;
+      result = await checkSlidingWindow(keyId, limit, windowMs);
+    }
+
+    // ── STANDARD RATE LIMIT HEADERS ─────────────────────────────────────────
+    res.setHeader('X-RateLimit-Limit', displayLimit);
     res.setHeader('X-RateLimit-Remaining', result.remaining);
     res.setHeader('X-RateLimit-Reset', result.resetAt);
+    res.setHeader('X-RateLimit-Strategy', strategy);
 
     if (!result.allowed) {
-      // Calculate how many seconds until the window resets for Retry-After header
       const retryAfterSeconds = Math.ceil((result.resetAt - Date.now()) / 1000);
       res.setHeader('Retry-After', retryAfterSeconds);
 
       res.status(429).json({
         error: 'Too Many Requests',
-        message: `Rate limit of ${limit} requests per minute exceeded. Retry after ${retryAfterSeconds}s.`,
+        message:
+          strategy === 'TOKEN_BUCKET'
+            ? `Token bucket exhausted. Retry after ${retryAfterSeconds}s (refill rate: ${rateLimitConfig?.refillRate ?? '?'} tokens/sec).`
+            : `Rate limit of ${displayLimit} requests exceeded. Retry after ${retryAfterSeconds}s.`,
+        strategy,
         resetAt: new Date(result.resetAt).toISOString(),
       });
       return;
@@ -66,14 +103,14 @@ export async function rateLimitMiddleware(
 
     next();
   } catch (err) {
-    // Unexpected errors from checkSlidingWindow bubble here (Redis crash, script errors, etc.)
+    // Fail open so a transient Redis error does not block all gateway traffic
     console.error('[RateLimitMiddleware] Unexpected error during rate limit check:', {
       keyId,
+      strategy: req.apiKey.rateLimitConfig?.strategy ?? 'SLIDING_WINDOW',
       error: err instanceof Error ? err.message : String(err),
       path: req.path,
       timestamp: new Date().toISOString(),
     });
-    // Fail open so a Redis blip does not take down the entire gateway
     next();
   }
 }

@@ -39,7 +39,9 @@ model ApiKey {
   requestLogs     RequestLog[]
 }
 
-/// Rate limiting rule attached to an API key
+/// Rate limiting rule attached to an API key.
+/// For SLIDING_WINDOW / FIXED_WINDOW: windowSeconds + maxRequests are used.
+/// For TOKEN_BUCKET: capacity + refillRate are used (windowSeconds is ignored).
 model RateLimitConfig {
   id            String            @id @default(uuid())
   apiKeyId      String            @unique
@@ -47,6 +49,12 @@ model RateLimitConfig {
   windowSeconds Int               @default(60)
   maxRequests   Int               @default(100)
   strategy      RateLimitStrategy @default(SLIDING_WINDOW)
+  /// TOKEN_BUCKET only — maximum tokens the bucket can hold (burst size).
+  /// Null for SLIDING_WINDOW / FIXED_WINDOW strategies.
+  capacity      Int?
+  /// TOKEN_BUCKET only — tokens added per second to the bucket.
+  /// Null for SLIDING_WINDOW / FIXED_WINDOW strategies.
+  refillRate    Float?
   createdAt     DateTime          @default(now())
   updatedAt     DateTime          @updatedAt
 }

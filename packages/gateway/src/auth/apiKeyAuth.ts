@@ -19,7 +19,19 @@ export interface AuthenticatedApiKey {
   key: string;
   name: string;
   scopes: ApiKeyScope[];
+  /** Legacy per-minute limit; used when no RateLimitConfig row exists (SLIDING_WINDOW default). */
   rateLimit: number;
+  /**
+   * Optional per-key rate limit configuration sourced from the RateLimitConfig table.
+   * When present it takes precedence over the bare `rateLimit` field.
+   */
+  rateLimitConfig?: {
+    strategy: 'FIXED_WINDOW' | 'SLIDING_WINDOW' | 'TOKEN_BUCKET';
+    windowSeconds: number;
+    maxRequests: number;
+    capacity: number | null;
+    refillRate: number | null;
+  };
 }
 
 // Augment the Express Request type declaration so downstream middleware and route handlers
@@ -129,6 +141,16 @@ export async function apiKeyAuth(
         scopes: true,
         rateLimit: true,
         isActive: true,
+        // Fetch the per-key rate limit config so the middleware can choose algorithm
+        rateLimitConfig: {
+          select: {
+            strategy: true,
+            windowSeconds: true,
+            maxRequests: true,
+            capacity: true,
+            refillRate: true,
+          },
+        },
       },
     });
 
@@ -156,6 +178,8 @@ export async function apiKeyAuth(
       name: keyRecord.name,
       scopes: keyRecord.scopes,
       rateLimit: keyRecord.rateLimit,
+      // Map the Prisma result to our interface — null from DB becomes undefined here
+      rateLimitConfig: keyRecord.rateLimitConfig ?? undefined,
     };
 
     // 3. Cache valid key in Redis for 60 seconds
