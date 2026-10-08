@@ -13,6 +13,7 @@
     "strictFunctionTypes": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
+    "isolatedModules": true,
     "skipLibCheck": true
   },
   "include": ["src/**/*"],

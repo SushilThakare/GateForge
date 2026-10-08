@@ -3,15 +3,17 @@
  * @description Entry point for the GateForge Gateway service.
  * Sits at the network perimeter, intercepting incoming HTTP client traffic.
  * Executes the middleware pipeline in sequence:
- * 1. Body Parsing (JSON)
- * 2. Unauthenticated endpoints (/health)
- * 3. API Key Authentication (apiKeyAuth)
- * 4. Sliding Window Rate Limiter (rateLimitMiddleware)
- * 5. Administrative Management Routes (/api/keys guarded by ADMIN scope)
- * 6. Downstream Proxy & Upstream Forwarding (/v1/proxy/*)
+ * 1. CORS headers (cors package — allows browser clients to reach the gateway)
+ * 2. Body Parsing (JSON)
+ * 3. Unauthenticated endpoints (/health)
+ * 4. API Key Authentication (apiKeyAuth)
+ * 5. Rate Limiting (rateLimitMiddleware → rateLimiter → slidingWindow / tokenBucket)
+ * 6. Administrative Management Routes (/api/keys guarded by ADMIN scope)
+ * 7. Downstream Proxy & Upstream Forwarding (/v1/proxy/*)
  */
 
 import express, { Express, Request, Response, NextFunction } from 'express';
+import cors from 'cors';
 import dotenv from 'dotenv';
 import { ApiKeyScope } from '@prisma/client';
 import { apiKeyAuth } from './auth/apiKeyAuth.js';
@@ -60,10 +62,28 @@ export async function startGatewayServer(): Promise<void> {
     const config = getGatewayConfig();
     const app: Express = express();
 
-    // 1. Standard JSON body parser for incoming gateway payloads
+    // 1. CORS — must come first so browser preflight (OPTIONS) requests are answered
+    // immediately without hitting auth or rate limiting middleware.
+    // In production, replace origin: '*' with an explicit allowlist of trusted domains.
+    app.use(cors({
+      origin: process.env.CORS_ORIGIN ?? '*',
+      methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+      allowedHeaders: ['Content-Type', 'X-API-Key', 'Authorization'],
+      // Expose rate-limit headers so browser JS can read them from fetch() responses
+      exposedHeaders: [
+        'X-RateLimit-Limit',
+        'X-RateLimit-Remaining',
+        'X-RateLimit-Reset',
+        'X-RateLimit-Strategy',
+        'Retry-After',
+      ],
+      maxAge: 86_400, // Cache preflight response for 24h to reduce OPTIONS round-trips
+    }));
+
+    // 2. Standard JSON body parser for incoming gateway payloads
     app.use(express.json());
 
-    // 2. Health check endpoint (exempt from API key auth for container orchestrators and load balancers)
+    // 3. Health check endpoint (exempt from API key auth for container orchestrators and load balancers)
     app.get('/health', (_req: Request, res: Response) => {
       res.status(200).json({ status: 'ok', service: 'gateway', timestamp: new Date().toISOString() });
     });
