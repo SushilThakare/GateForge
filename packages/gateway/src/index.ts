@@ -19,9 +19,11 @@ import { ApiKeyScope } from '@prisma/client';
 import { apiKeyAuth } from './auth/apiKeyAuth.js';
 import { requireScope } from './auth/requireScope.js';
 import { keyRouter } from './routes/keyRoutes.js';
+import { logRouter } from './routes/logRoutes.js';
 import { rateLimitMiddleware } from './rateLimit/rateLimitMiddleware.js';
 import { prisma } from './lib/prisma.js';
 import { redis } from './lib/redis.js';
+import { enqueueRequestLog, closeRequestLogsQueue } from './queue/logProducer.js';
 
 // Load environment variables from process env or local config file
 dotenv.config();
@@ -100,8 +102,39 @@ export async function startGatewayServer(): Promise<void> {
     // 5. Key Management Endpoints (Requires ADMIN scope)
     app.use('/api/keys', requireScope(ApiKeyScope.ADMIN), keyRouter);
 
+    // 6. Log Viewer & Analytics Endpoints (Requires ADMIN scope)
+    app.use('/api/logs', requireScope(ApiKeyScope.ADMIN), logRouter);
+
     // 5. Downstream Proxy Route Handler (Stub representing upstream service proxy forwarding)
     app.all('/v1/proxy/*', (req: Request, res: Response) => {
+      // Record request start time BEFORE any response work — wall-clock milliseconds
+      const requestStartMs = Date.now();
+
+      // Capture the API key ID once; req.apiKey is guaranteed by apiKeyAuth middleware
+      const apiKeyId = req.apiKey?.id ?? null;
+
+      // ── Response logging hook ───────────────────────────────────────────────
+      // res.on('finish') fires AFTER the HTTP response has been fully written and
+      // flushed to the OS TCP buffer — i.e., the client has received it.
+      // This guarantees the log enqueue NEVER adds latency to the response itself.
+      res.on('finish', () => {
+        // Enqueue the log job without awaiting — pure fire-and-forget.
+        // If this throws (e.g., Redis is down), the .catch() inside enqueueRequestLog
+        // swallows the error so it can NEVER propagate back and cause an unhandled rejection.
+        enqueueRequestLog({
+          method: req.method,
+          path: req.path,
+          statusCode: res.statusCode,
+          responseTimeMs: Date.now() - requestStartMs,
+          apiKeyId,
+          // req.ip may be undefined behind a proxy; fall back to the socket remote address
+          clientIp: req.ip ?? req.socket?.remoteAddress ?? 'unknown',
+          userAgent: (req.headers['user-agent'] as string | undefined) ?? 'unknown',
+          timestamp: new Date().toISOString(),
+        });
+        // Intentionally NOT awaiting — response is already sent, we just schedule the work
+      });
+
       // Downstream middleware and handlers now have guaranteed access to req.apiKey
       res.status(200).json({
         message: 'Proxy request received and authenticated',
@@ -142,7 +175,12 @@ export async function startGatewayServer(): Promise<void> {
       console.log(`[Gateway] Received ${signal}. Starting graceful shutdown...`);
       server.close(async () => {
         try {
+          // Close all persistent connections in order:
+          // 1. BullMQ queue (flushes any in-flight Redis pipeline commands)
+          await closeRequestLogsQueue();
+          // 2. ioredis client used by auth/rate-limit subsystems
           await redis.quit();
+          // 3. Prisma connection pool to PostgreSQL
           await prisma.$disconnect();
           console.log('[Gateway] Closed database and Redis connections cleanly.');
           process.exit(0);
