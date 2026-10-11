@@ -168,11 +168,66 @@ keyRouter.get('/', async (req: Request, res: Response): Promise<void> => {
       },
     });
 
-    // Mask the plaintext key so credentials are never exposed in bulk list responses
-    const maskedKeys = keys.map((k) => ({
-      ...k,
-      key: maskApiKey(k.key),
-    }));
+    const sevenDaysAgo = new Date();
+    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 6);
+    sevenDaysAgo.setHours(0, 0, 0, 0);
+
+    // Group logs by apiKeyId and day for the 7-day sparkline
+    interface DailyUsageRow {
+      apiKeyId: string;
+      day: Date;
+      count: number | bigint;
+    }
+
+    const usageRows = await prisma.$queryRaw<DailyUsageRow[]>`
+      SELECT
+        "apiKeyId",
+        date_trunc('day', "timestamp") AS "day",
+        COUNT(*)::int AS "count"
+      FROM "RequestLog"
+      WHERE "timestamp" >= ${sevenDaysAgo}
+        AND "apiKeyId" IS NOT NULL
+      GROUP BY "apiKeyId", "day"
+      ORDER BY "day" ASC;
+    `;
+
+    // Map lookup: apiKeyId -> Map<dayIsoDate, count>
+    const usageByMap = new Map<string, Map<string, number>>();
+    for (const row of usageRows) {
+      if (!row.apiKeyId) continue;
+      if (!usageByMap.has(row.apiKeyId)) {
+        usageByMap.set(row.apiKeyId, new Map());
+      }
+      const dayStr = new Date(row.day).toISOString().split('T')[0];
+      usageByMap.get(row.apiKeyId)!.set(dayStr, Number(row.count));
+    }
+
+    // Build standard 7 calendar days array
+    const dayKeys: string[] = [];
+    const dayLabels: string[] = [];
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date();
+      d.setDate(d.getDate() - i);
+      dayKeys.push(d.toISOString().split('T')[0]);
+      dayLabels.push(d.toLocaleDateString('en-US', { weekday: 'short' }));
+    }
+
+    // Mask plaintext key and attach 7-day sparkline usage
+    const maskedKeys = keys.map((k) => {
+      const keyUsageMap = usageByMap.get(k.id);
+      const usage7d = dayKeys.map((dayStr, idx) => ({
+        date: dayLabels[idx],
+        requests: keyUsageMap?.get(dayStr) ?? 0,
+      }));
+      const totalRequests7d = usage7d.reduce((acc, curr) => acc + curr.requests, 0);
+
+      return {
+        ...k,
+        key: maskApiKey(k.key),
+        usage7d,
+        totalRequests7d,
+      };
+    });
 
     res.status(200).json({
       keys: maskedKeys,

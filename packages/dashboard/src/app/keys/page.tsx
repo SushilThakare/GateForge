@@ -1,25 +1,36 @@
 /**
  * @file packages/dashboard/src/app/keys/page.tsx
- * @description API Keys Management placeholder view for GateForge Dashboard.
+ * @description API Keys Management page for GateForge.
+ * Next.js App Router Server Component that executes server-side fetching of registered
+ * credentials and 7-day usage metrics, passing them to the interactive ApiKeyTable.
  */
 
 import React from 'react';
+import { fetchGatewayKeys } from '../../lib/keysApi';
 import { Header } from '../../components/layout/Header';
-import { Card, Title, Text } from '@tremor/react';
+import { ApiKeyTable } from '../../components/keys/ApiKeyTable';
+import { ApiKeyItem } from '../../types/keys';
 
-export default function ApiKeysPage(): JSX.Element {
+export const dynamic = 'force-dynamic';
+
+/**
+ * API Keys Management page Server Component.
+ * 
+ * @returns {Promise<JSX.Element>} Rendered page with initial keys
+ */
+export default async function ApiKeysPage(): Promise<JSX.Element> {
+  const initialKeys: ApiKeyItem[] = await fetchGatewayKeys();
+
   return (
     <div className="space-y-6">
       <Header
-        title="API Keys Management"
-        subtitle="Manage client credentials, token bucket allowances, and access scopes"
+        title="API Keys"
+        subtitle="Manage client authentication credentials, token bucket allowances, and access scopes"
       />
-      <Card className="bg-slate-900/90 border border-slate-800 p-8 text-center">
-        <Title className="text-slate-100 text-lg">API Key Management Module</Title>
-        <Text className="text-slate-400 mt-2">
-          Create, inspect, rotate, and revoke client credentials with fine-grained rate limits.
-        </Text>
-      </Card>
+
+      <section aria-label="API Keys Management Table">
+        <ApiKeyTable initialKeys={initialKeys} />
+      </section>
     </div>
   );
 }
