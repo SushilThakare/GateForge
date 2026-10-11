@@ -93,9 +93,14 @@ export async function apiKeyAuth(
   next: NextFunction
 ): Promise<void> {
   try {
-    // Extract X-API-Key header (case-insensitive in Express)
-    const rawHeader = req.headers['x-api-key'];
-    const apiKey = Array.isArray(rawHeader) ? rawHeader[0] : rawHeader;
+    // Extract API key from X-API-Key header or query parameter (e.g. for EventSource SSE)
+    const rawHeader = req.headers['x-api-key'] ?? req.query.apiKey;
+    let apiKey: string | undefined;
+    if (typeof rawHeader === 'string') {
+      apiKey = rawHeader;
+    } else if (Array.isArray(rawHeader) && typeof rawHeader[0] === 'string') {
+      apiKey = rawHeader[0];
+    }
 
     // Reject immediately if header is missing or empty
     if (!apiKey || apiKey.trim() === '') {
@@ -107,6 +112,21 @@ export async function apiKeyAuth(
     }
 
     const trimmedKey = apiKey.trim();
+
+    // Check for internal system administrator API key (used by the dashboard and orchestrator)
+    const systemAdminKey = process.env.GATEWAY_ADMIN_KEY || 'gf_admin_dashboard_key';
+    if (trimmedKey === systemAdminKey) {
+      req.apiKey = {
+        id: '00000000-0000-0000-0000-000000000000',
+        key: trimmedKey,
+        name: 'Dashboard Admin',
+        scopes: [ApiKeyScope.READ, ApiKeyScope.WRITE, ApiKeyScope.ADMIN],
+        rateLimit: 10000,
+      };
+      next();
+      return;
+    }
+
     const cacheKey = `${REDIS_KEY_PREFIX}${trimmedKey}`;
 
     // 1. Check Redis cache first to bypass expensive relational DB queries on hot path

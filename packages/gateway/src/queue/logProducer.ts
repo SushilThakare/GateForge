@@ -23,6 +23,7 @@
  */
 
 import { Queue, QueueOptions } from 'bullmq';
+import { redis } from '../lib/redis.js';
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Types
@@ -170,6 +171,17 @@ export async function enqueueRequestLog(
     const jobName = `${data.method} ${data.path} @ ${data.timestamp}`;
 
     const job = await queue.add(jobName, data);
+
+    // Broadcast log event over Redis Pub/Sub channel for live SSE telemetry subscribers
+    redis.publish(
+      'request-logs-stream',
+      JSON.stringify({
+        id: job.id ?? `log-${Date.now()}`,
+        ...data,
+      })
+    ).catch(() => {
+      // Swallowed: Pub/sub broadcast failure is non-fatal to the request flow
+    });
 
     return { success: true, jobId: job.id ?? 'unknown' };
   } catch (err: unknown) {
