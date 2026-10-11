@@ -6,9 +6,12 @@
 import {
   queryLogsSchema,
   logStatsQuerySchema,
+  analyticsQuerySchema,
   logIdParamSchema,
   resolveDateRange,
+  resolveAnalyticsDateRange,
   TimeRangePreset,
+  AnalyticsTimeRangePreset,
 } from '../src/routes/logRoutes.js';
 
 describe('Log Routes Unit & Validation Tests', () => {
@@ -107,6 +110,55 @@ describe('Log Routes Unit & Validation Tests', () => {
       expect(from.toISOString()).toBe(customFrom);
       expect(to.toISOString()).toBe(customTo);
       expect(Math.round(durationMinutes)).toBe(1440);
+    });
+  });
+
+  describe('analyticsQuerySchema', () => {
+    it('should default timeRange to 24h when omitted', () => {
+      const result = analyticsQuerySchema.safeParse({});
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.timeRange).toBe(AnalyticsTimeRangePreset.TWENTY_FOUR_HOURS);
+      }
+    });
+
+    it('should accept valid analytics time ranges (1h, 6h, 24h, 7d, 30d)', () => {
+      for (const preset of ['1h', '6h', '24h', '7d', '30d']) {
+        const res = analyticsQuerySchema.safeParse({ timeRange: preset });
+        expect(res.success).toBe(true);
+      }
+    });
+
+    it('should reject unsupported analytics time range', () => {
+      const result = analyticsQuerySchema.safeParse({ timeRange: '90d' });
+      expect(result.success).toBe(false);
+    });
+  });
+
+  describe('resolveAnalyticsDateRange', () => {
+    it('should compute 1h with 60s buckets', () => {
+      const { from, to, durationMinutes, bucketSeconds } = resolveAnalyticsDateRange(
+        AnalyticsTimeRangePreset.ONE_HOUR
+      );
+      expect(to.getTime()).toBeGreaterThan(from.getTime());
+      expect(Math.round(durationMinutes)).toBe(60);
+      expect(bucketSeconds).toBe(60);
+    });
+
+    it('should compute 6h with 300s buckets', () => {
+      const { durationMinutes, bucketSeconds } = resolveAnalyticsDateRange(
+        AnalyticsTimeRangePreset.SIX_HOURS
+      );
+      expect(Math.round(durationMinutes)).toBe(360);
+      expect(bucketSeconds).toBe(300);
+    });
+
+    it('should compute 30d with 28800s buckets', () => {
+      const { durationMinutes, bucketSeconds } = resolveAnalyticsDateRange(
+        AnalyticsTimeRangePreset.THIRTY_DAYS
+      );
+      expect(Math.round(durationMinutes)).toBe(43200);
+      expect(bucketSeconds).toBe(28800);
     });
   });
 });

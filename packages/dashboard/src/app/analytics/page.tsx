@@ -1,25 +1,37 @@
 /**
  * @file packages/dashboard/src/app/analytics/page.tsx
- * @description Advanced Analytics placeholder view for GateForge Dashboard.
+ * @description Next.js App Router Server Component for the Performance Analytics page.
+ * Handles server-side initial telemetry fetching and streams the interactive
+ * analytics client workspace to the browser.
  */
 
 import React from 'react';
 import { Header } from '../../components/layout/Header';
-import { Card, Title, Text } from '@tremor/react';
+import { fetchGatewayAnalytics } from '../../lib/analyticsApi';
+import { AnalyticsDashboard } from '../../components/analytics/AnalyticsDashboard';
 
-export default function AnalyticsPage(): JSX.Element {
+export const dynamic = 'force-dynamic';
+
+export const metadata = {
+  title: 'Analytics — GateForge',
+  description:
+    'Deep latency percentiles (p50, p95, p99), throughput histograms, and geographic request distribution.',
+};
+
+/**
+ * Server Component entry point for /analytics.
+ * Fetches initial 24h analytics dataset from Gateway before streaming to client.
+ */
+export default async function AnalyticsPage(): Promise<JSX.Element> {
+  const initialData = await fetchGatewayAnalytics('24h');
+
   return (
     <div className="space-y-6">
       <Header
-        title="Telemetry Analytics"
-        subtitle="Deep latency distribution, throughput histograms, and error code analysis"
+        title="Performance Analytics"
+        subtitle="Latency percentiles, throughput cadence, status distributions, and geographic traffic"
       />
-      <Card className="bg-slate-900/90 border border-slate-800 p-8 text-center">
-        <Title className="text-slate-100 text-lg">Analytics Module</Title>
-        <Text className="text-slate-400 mt-2">
-          Interactive latency percentiles (p50, p95, p99) and status breakdowns across flexible time ranges.
-        </Text>
-      </Card>
+      <AnalyticsDashboard initialData={initialData} />
     </div>
   );
 }

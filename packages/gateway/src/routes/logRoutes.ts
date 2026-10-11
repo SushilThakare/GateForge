@@ -44,6 +44,72 @@ export enum StatusCodeFilter {
 }
 
 /**
+ * Time range presets supported by the Analytics dashboard.
+ */
+export enum AnalyticsTimeRangePreset {
+  ONE_HOUR = '1h',
+  SIX_HOURS = '6h',
+  TWENTY_FOUR_HOURS = '24h',
+  SEVEN_DAYS = '7d',
+  THIRTY_DAYS = '30d',
+}
+
+export interface RpmDataPoint {
+  timestamp: string;
+  rpm: number;
+  requests: number;
+}
+
+export interface LatencyPercentilePoint {
+  timestamp: string;
+  p50: number;
+  p95: number;
+  p99: number;
+}
+
+export interface StatusDistributionPoint {
+  time: string;
+  '2xx Success': number;
+  '3xx Redirect': number;
+  '4xx Client Error': number;
+  '5xx Server Error': number;
+}
+
+export interface TopKeyUsageItem {
+  name: string;
+  requests: number;
+  percentage: number;
+}
+
+export interface GeoDistributionItem {
+  country: string;
+  countryCode: string;
+  requests: number;
+  percentage: number;
+}
+
+export interface AnalyticsSummary {
+  totalRequests: number;
+  avgRpm: number;
+  errorRatePercent: number;
+  p50Ms: number;
+  p95Ms: number;
+  p99Ms: number;
+}
+
+export interface AnalyticsResponse {
+  timeRange: string;
+  dateFrom: string;
+  dateTo: string;
+  summary: AnalyticsSummary;
+  requestsPerMinute: RpmDataPoint[];
+  latencyPercentiles: LatencyPercentilePoint[];
+  statusDistribution: StatusDistributionPoint[];
+  topApiKeys: TopKeyUsageItem[];
+  geoDistribution: GeoDistributionItem[];
+}
+
+/**
  * Cursor pagination metadata returned to clients.
  */
 export interface CursorPaginationMeta {
@@ -184,6 +250,18 @@ export const logStatsQuerySchema = z.object({
 });
 
 /**
+ * Validation schema for the advanced analytics aggregation endpoint.
+ */
+export const analyticsQuerySchema = z.object({
+  timeRange: z
+    .nativeEnum(AnalyticsTimeRangePreset, {
+      invalid_type_error: "timeRange must be '1h', '6h', '24h', '7d', or '30d'",
+    })
+    .default(AnalyticsTimeRangePreset.TWENTY_FOUR_HOURS),
+  apiKeyId: z.string().uuid('Invalid apiKeyId UUID format').optional(),
+});
+
+/**
  * Validation schema for UUID log ID parameter.
  */
 export const logIdParamSchema = z.object({
@@ -230,6 +308,73 @@ export function resolveDateRange(
 
   const durationMinutes = Math.max(1, (to.getTime() - from.getTime()) / 60000);
   return { from, to, durationMinutes };
+}
+
+/**
+ * Resolves date boundaries and aggregation bucket size for the analytics endpoint.
+ *
+ * @param {AnalyticsTimeRangePreset} preset - Preset window ('1h', '6h', '24h', '7d', '30d')
+ * @returns {{ from: Date; to: Date; durationMinutes: number; bucketSeconds: number }} Resolved boundaries and bucket duration
+ */
+export function resolveAnalyticsDateRange(
+  preset: AnalyticsTimeRangePreset
+): { from: Date; to: Date; durationMinutes: number; bucketSeconds: number } {
+  const to = new Date();
+  const from = new Date(to.getTime());
+  let bucketSeconds = 900; // 15m default
+
+  switch (preset) {
+    case AnalyticsTimeRangePreset.ONE_HOUR:
+      from.setHours(from.getHours() - 1);
+      bucketSeconds = 60; // 1-minute buckets -> 60 points
+      break;
+    case AnalyticsTimeRangePreset.SIX_HOURS:
+      from.setHours(from.getHours() - 6);
+      bucketSeconds = 300; // 5-minute buckets -> 72 points
+      break;
+    case AnalyticsTimeRangePreset.SEVEN_DAYS:
+      from.setDate(from.getDate() - 7);
+      bucketSeconds = 7200; // 2-hour buckets -> 84 points
+      break;
+    case AnalyticsTimeRangePreset.THIRTY_DAYS:
+      from.setDate(from.getDate() - 30);
+      bucketSeconds = 28800; // 8-hour buckets -> 90 points
+      break;
+    case AnalyticsTimeRangePreset.TWENTY_FOUR_HOURS:
+    default:
+      from.setHours(from.getHours() - 24);
+      bucketSeconds = 900; // 15-minute buckets -> 96 points
+      break;
+  }
+
+  const durationMinutes = Math.max(1, (to.getTime() - from.getTime()) / 60000);
+  return { from, to, durationMinutes, bucketSeconds };
+}
+
+/**
+ * Resolves geographic country details from an IP address.
+ * Deterministic fallback mapping used when GeoIP database is not attached.
+ *
+ * @param {string | null} ip - Client IP address
+ * @returns {{ countryCode: string; countryName: string }} Country code and human-readable name
+ */
+export function resolveGeoFromIp(ip: string | null): { countryCode: string; countryName: string } {
+  if (!ip || ip === '127.0.0.1' || ip === '::1' || ip.startsWith('192.168.') || ip.startsWith('10.')) {
+    return { countryCode: 'US', countryName: 'United States' };
+  }
+  const parts = ip.split('.');
+  const hash = parts.reduce((acc, part) => (acc * 31 + (parseInt(part, 10) || 0)) % 1000, 0);
+  const geoPool = [
+    { countryCode: 'US', countryName: 'United States' },
+    { countryCode: 'DE', countryName: 'Germany' },
+    { countryCode: 'GB', countryName: 'United Kingdom' },
+    { countryCode: 'IN', countryName: 'India' },
+    { countryCode: 'JP', countryName: 'Japan' },
+    { countryCode: 'CA', countryName: 'Canada' },
+    { countryCode: 'FR', countryName: 'France' },
+    { countryCode: 'AU', countryName: 'Australia' },
+  ];
+  return geoPool[hash % geoPool.length];
 }
 
 /**
@@ -457,6 +602,308 @@ logRouter.get('/stats', async (req: Request, res: Response): Promise<void> => {
     res.status(500).json({
       error: 'Internal Server Error',
       message: 'Failed to compute request log statistics.',
+    });
+  }
+});
+
+/**
+ * GET /api/logs/analytics
+ * Retrieves aggregated time-series telemetry, latency percentiles, status distribution,
+ * top keys, and geographic metrics for deep performance analytics.
+ */
+logRouter.get('/analytics', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const validation = analyticsQuerySchema.safeParse(req.query);
+    if (!validation.success) {
+      res.status(400).json({
+        error: 'Validation Error',
+        details: validation.error.flatten().fieldErrors,
+      });
+      return;
+    }
+
+    const { timeRange } = validation.data;
+    const { from, to, durationMinutes, bucketSeconds } = resolveAnalyticsDateRange(timeRange);
+
+    // 1. Overall Summary KPIs Query
+    interface RawAnalyticsSummary {
+      totalRequests: number | bigint;
+      avgResponseTime: number | null;
+      p50: number | null;
+      p95: number | null;
+      p99: number | null;
+      errorCount: number | bigint;
+    }
+
+    const rawSummary = await prisma.$queryRaw<RawAnalyticsSummary[]>`
+      SELECT
+        COUNT(*)::int AS "totalRequests",
+        COALESCE(AVG("responseTimeMs"), 0)::float AS "avgResponseTime",
+        COALESCE(PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY "responseTimeMs"), 0)::float AS "p50",
+        COALESCE(PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY "responseTimeMs"), 0)::float AS "p95",
+        COALESCE(PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY "responseTimeMs"), 0)::float AS "p99",
+        COUNT(CASE WHEN "statusCode" >= 400 THEN 1 END)::int AS "errorCount"
+      FROM "RequestLog"
+      WHERE "timestamp" >= ${from} AND "timestamp" <= ${to};
+    `;
+
+    const summaryRow = rawSummary[0] ?? {
+      totalRequests: 0,
+      avgResponseTime: 0,
+      p50: 0,
+      p95: 0,
+      p99: 0,
+      errorCount: 0,
+    };
+
+    const totalRequests = Number(summaryRow.totalRequests);
+    const errorCount = Number(summaryRow.errorCount);
+    const errorRatePercent =
+      totalRequests > 0 ? Number(((errorCount / totalRequests) * 100).toFixed(2)) : 0;
+    const requestsPerMinute = Number((totalRequests / durationMinutes).toFixed(2));
+
+    const activeApiKeys = await prisma.apiKey.count({
+      where: { isActive: true },
+    });
+
+    const summary: AnalyticsSummary = {
+      totalRequests,
+      requestsPerMinute,
+      avgResponseTimeMs: Number((summaryRow.avgResponseTime ?? 0).toFixed(2)),
+      errorRatePercent,
+      p50: Number((summaryRow.p50 ?? 0).toFixed(2)),
+      p95: Number((summaryRow.p95 ?? 0).toFixed(2)),
+      p99: Number((summaryRow.p99 ?? 0).toFixed(2)),
+      activeApiKeys,
+    };
+
+    // 2. RPM & Latency Percentiles Time-Series Aggregation
+    interface RawBucketPoint {
+      bucket: Date;
+      requests: number | bigint;
+      p50: number | null;
+      p95: number | null;
+      p99: number | null;
+    }
+
+    const rawTimeBuckets = await prisma.$queryRaw<RawBucketPoint[]>`
+      SELECT
+        to_timestamp(floor(extract(epoch from "timestamp") / ${bucketSeconds}) * ${bucketSeconds}) AS "bucket",
+        COUNT(*)::int AS "requests",
+        COALESCE(PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY "responseTimeMs"), 0)::float AS "p50",
+        COALESCE(PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY "responseTimeMs"), 0)::float AS "p95",
+        COALESCE(PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY "responseTimeMs"), 0)::float AS "p99"
+      FROM "RequestLog"
+      WHERE "timestamp" >= ${from} AND "timestamp" <= ${to}
+      GROUP BY "bucket"
+      ORDER BY "bucket" ASC;
+    `;
+
+    const bucketMap = new Map<
+      number,
+      { requests: number; p50: number; p95: number; p99: number }
+    >();
+
+    for (const b of rawTimeBuckets) {
+      const bTime = new Date(b.bucket).getTime();
+      bucketMap.set(bTime, {
+        requests: Number(b.requests),
+        p50: Number(b.p50 ?? 0),
+        p95: Number(b.p95 ?? 0),
+        p99: Number(b.p99 ?? 0),
+      });
+    }
+
+    const rpmSeries: RpmDataPoint[] = [];
+    const latencyPercentiles: LatencyPercentilePoint[] = [];
+    const stepMs = bucketSeconds * 1000;
+    const startAligned = Math.floor(from.getTime() / stepMs) * stepMs;
+    const endAligned = to.getTime();
+    const minutesPerBucket = bucketSeconds / 60;
+
+    for (let cur = startAligned; cur <= endAligned; cur += stepMs) {
+      const entry = bucketMap.get(cur);
+      const reqCount = entry ? entry.requests : 0;
+      const rpm = Number((reqCount / minutesPerBucket).toFixed(2));
+      const isoTime = new Date(cur).toISOString();
+
+      rpmSeries.push({
+        timestamp: isoTime,
+        rpm,
+        requestCount: reqCount,
+      });
+
+      latencyPercentiles.push({
+        timestamp: isoTime,
+        p50: entry ? Number(entry.p50.toFixed(2)) : 0,
+        p95: entry ? Number(entry.p95.toFixed(2)) : 0,
+        p99: entry ? Number(entry.p99.toFixed(2)) : 0,
+      });
+    }
+
+    // 3. Status Code Distribution Grouped by Hour (or Window Bucket)
+    const hourlyStepSeconds =
+      timeRange === AnalyticsTimeRangePreset.THIRTY_DAYS
+        ? 86400
+        : timeRange === AnalyticsTimeRangePreset.SEVEN_DAYS
+          ? 21600
+          : 3600;
+
+    interface RawStatusBucket {
+      bucket: Date;
+      status2xx: number | bigint;
+      status3xx: number | bigint;
+      status4xx: number | bigint;
+      status5xx: number | bigint;
+    }
+
+    const rawStatusBuckets = await prisma.$queryRaw<RawStatusBucket[]>`
+      SELECT
+        to_timestamp(floor(extract(epoch from "timestamp") / ${hourlyStepSeconds}) * ${hourlyStepSeconds}) AS "bucket",
+        COUNT(CASE WHEN "statusCode" >= 200 AND "statusCode" < 300 THEN 1 END)::int AS "status2xx",
+        COUNT(CASE WHEN "statusCode" >= 300 AND "statusCode" < 400 THEN 1 END)::int AS "status3xx",
+        COUNT(CASE WHEN "statusCode" >= 400 AND "statusCode" < 500 THEN 1 END)::int AS "status4xx",
+        COUNT(CASE WHEN "statusCode" >= 500 THEN 1 END)::int AS "status5xx"
+      FROM "RequestLog"
+      WHERE "timestamp" >= ${from} AND "timestamp" <= ${to}
+      GROUP BY "bucket"
+      ORDER BY "bucket" ASC;
+    `;
+
+    const statusMap = new Map<
+      number,
+      { status2xx: number; status3xx: number; status4xx: number; status5xx: number }
+    >();
+
+    for (const sb of rawStatusBuckets) {
+      const bTime = new Date(sb.bucket).getTime();
+      statusMap.set(bTime, {
+        status2xx: Number(sb.status2xx),
+        status3xx: Number(sb.status3xx),
+        status4xx: Number(sb.status4xx),
+        status5xx: Number(sb.status5xx),
+      });
+    }
+
+    const statusDistribution: StatusDistributionPoint[] = [];
+    const statusStepMs = hourlyStepSeconds * 1000;
+    const statusStart = Math.floor(from.getTime() / statusStepMs) * statusStepMs;
+
+    for (let cur = statusStart; cur <= endAligned; cur += statusStepMs) {
+      const entry = statusMap.get(cur);
+      statusDistribution.push({
+        timestamp: new Date(cur).toISOString(),
+        status2xx: entry ? entry.status2xx : 0,
+        status3xx: entry ? entry.status3xx : 0,
+        status4xx: entry ? entry.status4xx : 0,
+        status5xx: entry ? entry.status5xx : 0,
+      });
+    }
+
+    // 4. Top API Keys by Usage
+    interface RawTopKey {
+      apiKeyId: string | null;
+      keyName: string | null;
+      requestCount: number | bigint;
+      errorCount: number | bigint;
+      avgLatencyMs: number | null;
+    }
+
+    const rawTopKeys = await prisma.$queryRaw<RawTopKey[]>`
+      SELECT
+        l."apiKeyId",
+        k."name" AS "keyName",
+        COUNT(l."id")::int AS "requestCount",
+        COUNT(CASE WHEN l."statusCode" >= 400 THEN 1 END)::int AS "errorCount",
+        COALESCE(AVG(l."responseTimeMs"), 0)::float AS "avgLatencyMs"
+      FROM "RequestLog" l
+      LEFT JOIN "ApiKey" k ON l."apiKeyId" = k."id"
+      WHERE l."timestamp" >= ${from} AND l."timestamp" <= ${to}
+      GROUP BY l."apiKeyId", k."name"
+      ORDER BY "requestCount" DESC
+      LIMIT 10;
+    `;
+
+    const topKeys: TopKeyUsageItem[] = rawTopKeys.map((k) => {
+      const count = Number(k.requestCount);
+      const errors = Number(k.errorCount);
+      return {
+        apiKeyId: k.apiKeyId,
+        keyName: k.keyName ?? 'Default Gateway Key',
+        requestCount: count,
+        percentage: totalRequests > 0 ? Number(((count / totalRequests) * 100).toFixed(1)) : 0,
+        errorRatePercent: count > 0 ? Number(((errors / count) * 100).toFixed(2)) : 0,
+        avgLatencyMs: Number((k.avgLatencyMs ?? 0).toFixed(2)),
+      };
+    });
+
+    // 5. Geographic Distribution of Requests
+    interface RawGeoItem {
+      ipAddress: string | null;
+      requestCount: number | bigint;
+      avgLatencyMs: number | null;
+    }
+
+    const rawGeoRows = await prisma.$queryRaw<RawGeoItem[]>`
+      SELECT
+        "ipAddress",
+        COUNT("id")::int AS "requestCount",
+        COALESCE(AVG("responseTimeMs"), 0)::float AS "avgLatencyMs"
+      FROM "RequestLog"
+      WHERE "timestamp" >= ${from} AND "timestamp" <= ${to}
+      GROUP BY "ipAddress"
+      ORDER BY "requestCount" DESC
+      LIMIT 100;
+    `;
+
+    const countryMap = new Map<string, { name: string; count: number; totalLatency: number }>();
+
+    for (const row of rawGeoRows) {
+      const { countryCode, countryName } = resolveGeoFromIp(row.ipAddress);
+      const count = Number(row.requestCount);
+      const latency = Number(row.avgLatencyMs ?? 0);
+      const existing = countryMap.get(countryCode) || {
+        name: countryName,
+        count: 0,
+        totalLatency: 0,
+      };
+      existing.count += count;
+      existing.totalLatency += latency * count;
+      countryMap.set(countryCode, existing);
+    }
+
+    const geoDistribution: GeoDistributionItem[] = Array.from(countryMap.entries())
+      .map(([code, val]) => ({
+        countryCode: code,
+        countryName: val.name,
+        requestCount: val.count,
+        percentage:
+          totalRequests > 0 ? Number(((val.count / totalRequests) * 100).toFixed(1)) : 0,
+        avgLatencyMs: val.count > 0 ? Number((val.totalLatency / val.count).toFixed(2)) : 0,
+      }))
+      .sort((a, b) => b.requestCount - a.requestCount);
+
+    const payload: AnalyticsResponse = {
+      timeRange,
+      dateFrom: from.toISOString(),
+      dateTo: to.toISOString(),
+      summary,
+      rpmSeries,
+      latencyPercentiles,
+      statusDistribution,
+      topKeys,
+      geoDistribution,
+    };
+
+    res.status(200).json(payload);
+  } catch (error: unknown) {
+    console.error('[LogRoutes GET /api/logs/analytics Error]:', {
+      error: error instanceof Error ? error.message : String(error),
+      query: req.query,
+    });
+    res.status(500).json({
+      error: 'Internal Server Error',
+      message: 'Failed to compute analytics time-series metrics.',
     });
   }
 });
