@@ -16,6 +16,7 @@ import { Router, Request, Response } from 'express';
 import { z } from 'zod';
 import { Prisma } from '@prisma/client';
 import { prisma } from '../lib/prisma.js';
+import { redis } from '../lib/redis.js';
 
 export const logRouter: Router = Router();
 
@@ -165,6 +166,7 @@ export const queryLogsSchema = z.object({
       message: 'Invalid HTTP method filter',
     })
     .optional(),
+  path: z.string().optional(),
 });
 
 /**
@@ -474,7 +476,7 @@ logRouter.get('/', async (req: Request, res: Response): Promise<void> => {
       return;
     }
 
-    const { cursor, limit, apiKeyId, status, dateFrom, dateTo, method } =
+    const { cursor, limit, apiKeyId, status, dateFrom, dateTo, method, path } =
       validation.data;
 
     // Build dynamic Prisma where filter object
@@ -486,6 +488,10 @@ logRouter.get('/', async (req: Request, res: Response): Promise<void> => {
 
     if (method) {
       where.method = method;
+    }
+
+    if (path && path.trim() !== '') {
+      where.path = { contains: path.trim(), mode: 'insensitive' };
     }
 
     if (status) {
@@ -558,6 +564,58 @@ logRouter.get('/', async (req: Request, res: Response): Promise<void> => {
       message: 'Failed to retrieve request logs.',
     });
   }
+});
+
+/**
+ * GET /api/logs/stream
+ * Server-Sent Events (SSE) endpoint providing live streaming of proxied request logs.
+ */
+logRouter.get('/stream', async (req: Request, res: Response): Promise<void> => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.flushHeaders();
+
+  res.write(': connected\n\n');
+
+  // Dedicated ioredis subscriber instance
+  const subscriber = redis.duplicate();
+
+  const handleMessage = (_channel: string, message: string) => {
+    try {
+      res.write(`data: ${message}\n\n`);
+    } catch {
+      // Stream write error
+    }
+  };
+
+  try {
+    subscriber.on('message', handleMessage);
+    await subscriber.subscribe('request-logs-stream');
+  } catch (subErr) {
+    console.error('[LogRoutes /stream subscribe error]:', subErr);
+  }
+
+  // Heartbeat ping every 15s to keep connection alive
+  const heartbeat = setInterval(() => {
+    try {
+      res.write(': heartbeat\n\n');
+    } catch {
+      clearInterval(heartbeat);
+    }
+  }, 15000);
+
+  req.on('close', async () => {
+    clearInterval(heartbeat);
+    subscriber.off('message', handleMessage);
+    try {
+      await subscriber.unsubscribe('request-logs-stream');
+      await subscriber.quit();
+    } catch {
+      // Ignore disconnect cleanup errors
+    }
+  });
 });
 
 /**

@@ -93,9 +93,14 @@ export async function apiKeyAuth(
   next: NextFunction
 ): Promise<void> {
   try {
-    // Extract X-API-Key header (case-insensitive in Express)
-    const rawHeader = req.headers['x-api-key'];
-    const apiKey = Array.isArray(rawHeader) ? rawHeader[0] : rawHeader;
+    // Extract API key from X-API-Key header or query parameter (e.g. for EventSource SSE)
+    const rawHeader = req.headers['x-api-key'] ?? req.query.apiKey;
+    let apiKey: string | undefined;
+    if (typeof rawHeader === 'string') {
+      apiKey = rawHeader;
+    } else if (Array.isArray(rawHeader) && typeof rawHeader[0] === 'string') {
+      apiKey = rawHeader[0];
+    }
 
     // Reject immediately if header is missing or empty
     if (!apiKey || apiKey.trim() === '') {

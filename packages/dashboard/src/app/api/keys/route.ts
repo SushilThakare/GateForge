@@ -9,6 +9,8 @@ import { z } from 'zod';
 import { ApiKeyScope } from '@/types/keys';
 import { fetchGatewayKeys, createGatewayKey } from '@/lib/keysApi';
 
+export const dynamic = 'force-dynamic';
+
 /**
  * Zod validation schema for creating an API key.
  */
