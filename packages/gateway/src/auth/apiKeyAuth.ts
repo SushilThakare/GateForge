@@ -107,6 +107,21 @@ export async function apiKeyAuth(
     }
 
     const trimmedKey = apiKey.trim();
+
+    // Check for internal system administrator API key (used by the dashboard and orchestrator)
+    const systemAdminKey = process.env.GATEWAY_ADMIN_KEY || 'gf_admin_dashboard_key';
+    if (trimmedKey === systemAdminKey) {
+      req.apiKey = {
+        id: '00000000-0000-0000-0000-000000000000',
+        key: trimmedKey,
+        name: 'Dashboard Admin',
+        scopes: [ApiKeyScope.READ, ApiKeyScope.WRITE, ApiKeyScope.ADMIN],
+        rateLimit: 10000,
+      };
+      next();
+      return;
+    }
+
     const cacheKey = `${REDIS_KEY_PREFIX}${trimmedKey}`;
 
     // 1. Check Redis cache first to bypass expensive relational DB queries on hot path

@@ -52,6 +52,38 @@ export interface CursorPaginationMeta {
 }
 
 /**
+ * Single data point in a time-series aggregation bucket.
+ */
+export interface RequestsOverTimePoint {
+  timestamp: string;
+  requests: number;
+  errors: number;
+}
+
+/**
+ * Endpoint throughput count item.
+ */
+export interface TopEndpointItem {
+  endpoint: string;
+  count: number;
+}
+
+/**
+ * Detailed error record for recent failure tables.
+ */
+export interface RecentErrorItem {
+  id: string;
+  path: string;
+  method: string;
+  statusCode: number;
+  responseTimeMs: number;
+  ipAddress: string;
+  userAgent: string | null;
+  timestamp: string;
+  apiKeyName: string | null;
+}
+
+/**
  * Aggregate metrics response structure.
  */
 export interface LogStatisticsResponse {
@@ -73,6 +105,10 @@ export interface LogStatisticsResponse {
     status4xx: number;
     status5xx: number;
   };
+  activeApiKeys: number;
+  requestsOverTime: RequestsOverTimePoint[];
+  topEndpoints: TopEndpointItem[];
+  recentErrors: RecentErrorItem[];
 }
 
 /**
@@ -283,6 +319,108 @@ logRouter.get('/stats', async (req: Request, res: Response): Promise<void> => {
       (totalRequests / durationMinutes).toFixed(2)
     );
 
+    // 1. Time-series aggregation in 15-minute intervals (900 seconds)
+    interface RawTimeBucket {
+      bucket: Date;
+      requests: number | bigint;
+      errors: number | bigint;
+    }
+
+    const rawTimeBuckets = await prisma.$queryRaw<RawTimeBucket[]>`
+      SELECT
+        to_timestamp(floor(extract(epoch from "timestamp") / 900) * 900) AS "bucket",
+        COUNT(*)::int AS "requests",
+        COUNT(CASE WHEN "statusCode" >= 400 THEN 1 END)::int AS "errors"
+      FROM "RequestLog"
+      WHERE "timestamp" >= ${from} AND "timestamp" <= ${to}
+        AND (${apiKeyId ?? null}::text IS NULL OR "apiKeyId" = ${apiKeyId ?? null})
+      GROUP BY "bucket"
+      ORDER BY "bucket" ASC;
+    `;
+
+    const bucketMap = new Map<number, { requests: number; errors: number }>();
+    for (const b of rawTimeBuckets) {
+      const bTime = new Date(b.bucket).getTime();
+      bucketMap.set(bTime, {
+        requests: Number(b.requests),
+        errors: Number(b.errors),
+      });
+    }
+
+    // Generate continuous 15-minute slots across the range so the chart has consistent points
+    const requestsOverTime: RequestsOverTimePoint[] = [];
+    const stepMs = 15 * 60 * 1000;
+    const startMs = Math.floor(from.getTime() / stepMs) * stepMs;
+    const endMs = to.getTime();
+
+    for (let currentMs = startMs; currentMs <= endMs; currentMs += stepMs) {
+      const match = bucketMap.get(currentMs);
+      const slotDate = new Date(currentMs);
+      requestsOverTime.push({
+        timestamp: slotDate.toISOString(),
+        requests: match ? match.requests : 0,
+        errors: match ? match.errors : 0,
+      });
+    }
+
+    // 2. Top 5 endpoints by request volume
+    interface RawTopEndpoint {
+      endpoint: string;
+      count: number | bigint;
+    }
+
+    const rawTopEndpoints = await prisma.$queryRaw<RawTopEndpoint[]>`
+      SELECT
+        "path" AS "endpoint",
+        COUNT(*)::int AS "count"
+      FROM "RequestLog"
+      WHERE "timestamp" >= ${from} AND "timestamp" <= ${to}
+        AND (${apiKeyId ?? null}::text IS NULL OR "apiKeyId" = ${apiKeyId ?? null})
+      GROUP BY "path"
+      ORDER BY "count" DESC
+      LIMIT 5;
+    `;
+
+    const topEndpoints: TopEndpointItem[] = rawTopEndpoints.map((item) => ({
+      endpoint: String(item.endpoint),
+      count: Number(item.count),
+    }));
+
+    // 3. Count of active API keys
+    const activeApiKeys = await prisma.apiKey.count({
+      where: { isActive: true },
+    });
+
+    // 4. Last 10 failed requests (statusCode >= 400)
+    const rawRecentErrors = await prisma.requestLog.findMany({
+      where: {
+        timestamp: { gte: from, lte: to },
+        statusCode: { gte: 400 },
+        ...(apiKeyId ? { apiKeyId } : {}),
+      },
+      take: 10,
+      orderBy: [{ timestamp: 'desc' }, { id: 'desc' }],
+      include: {
+        apiKey: {
+          select: {
+            name: true,
+          },
+        },
+      },
+    });
+
+    const recentErrors: RecentErrorItem[] = rawRecentErrors.map((log) => ({
+      id: log.id,
+      path: log.path,
+      method: log.method,
+      statusCode: log.statusCode,
+      responseTimeMs: log.responseTimeMs,
+      ipAddress: log.ipAddress,
+      userAgent: log.userAgent,
+      timestamp: log.timestamp.toISOString(),
+      apiKeyName: log.apiKey?.name ?? null,
+    }));
+
     const responsePayload: LogStatisticsResponse = {
       timeRange,
       dateFrom: from.toISOString(),
@@ -302,6 +440,10 @@ logRouter.get('/stats', async (req: Request, res: Response): Promise<void> => {
         status4xx: Number(stats.count4xx),
         status5xx: Number(stats.count5xx),
       },
+      activeApiKeys,
+      requestsOverTime,
+      topEndpoints,
+      recentErrors,
     };
 
     res.status(200).json(responsePayload);
