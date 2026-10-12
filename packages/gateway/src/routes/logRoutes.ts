@@ -104,7 +104,7 @@ export interface AnalyticsSummary {
 }
 
 export interface AnalyticsResponse {
-  timeRange: string;
+  timeRange: AnalyticsTimeRangePreset;
   dateFrom: string;
   dateTo: string;
   summary: AnalyticsSummary;
