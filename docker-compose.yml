@@ -41,7 +41,7 @@ services:
       context: .
       dockerfile: packages/gateway/Dockerfile
     container_name: gateforge_gateway
-    restart: always
+    restart: "no"
     ports:
       - "3000:3000"
     environment:
@@ -63,7 +63,7 @@ services:
       context: .
       dockerfile: packages/worker/Dockerfile
     container_name: gateforge_worker
-    restart: always
+    restart: "no"
     environment:
       NODE_ENV: development
       DATABASE_URL: "postgresql://gateforge_user:gateforge_password@postgres:5432/gateforge_db?schema=public"
@@ -82,7 +82,7 @@ services:
       context: .
       dockerfile: packages/dashboard/Dockerfile
     container_name: gateforge_dashboard
-    restart: always
+    restart: "no"
     ports:
       - "3001:3001"
     environment:

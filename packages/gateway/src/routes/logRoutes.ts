@@ -57,7 +57,7 @@ export enum AnalyticsTimeRangePreset {
 export interface RpmDataPoint {
   timestamp: string;
   rpm: number;
-  requests: number;
+  requestCount: number;
 }
 
 export interface LatencyPercentilePoint {
@@ -68,33 +68,39 @@ export interface LatencyPercentilePoint {
 }
 
 export interface StatusDistributionPoint {
-  time: string;
-  '2xx Success': number;
-  '3xx Redirect': number;
-  '4xx Client Error': number;
-  '5xx Server Error': number;
+  timestamp: string;
+  status2xx: number;
+  status3xx: number;
+  status4xx: number;
+  status5xx: number;
 }
 
 export interface TopKeyUsageItem {
-  name: string;
-  requests: number;
+  apiKeyId: string | null;
+  keyName: string;
+  requestCount: number;
   percentage: number;
+  errorRatePercent: number;
+  avgLatencyMs: number;
 }
 
 export interface GeoDistributionItem {
-  country: string;
   countryCode: string;
-  requests: number;
+  countryName: string;
+  requestCount: number;
   percentage: number;
+  avgLatencyMs: number;
 }
 
 export interface AnalyticsSummary {
   totalRequests: number;
-  avgRpm: number;
+  requestsPerMinute: number;
+  avgResponseTimeMs: number;
   errorRatePercent: number;
-  p50Ms: number;
-  p95Ms: number;
-  p99Ms: number;
+  p50: number;
+  p95: number;
+  p99: number;
+  activeApiKeys: number;
 }
 
 export interface AnalyticsResponse {
@@ -102,10 +108,10 @@ export interface AnalyticsResponse {
   dateFrom: string;
   dateTo: string;
   summary: AnalyticsSummary;
-  requestsPerMinute: RpmDataPoint[];
+  rpmSeries: RpmDataPoint[];
   latencyPercentiles: LatencyPercentilePoint[];
   statusDistribution: StatusDistributionPoint[];
-  topApiKeys: TopKeyUsageItem[];
+  topKeys: TopKeyUsageItem[];
   geoDistribution: GeoDistributionItem[];
 }
 

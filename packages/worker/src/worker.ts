@@ -22,6 +22,12 @@ import {
   startBatchTimers,
   stopLogProcessor,
 } from './processors/logProcessor.js';
+import {
+  setupAnomalyAnalysisSchedule,
+  stopAnalysisScheduler,
+  runTrafficAnalysis,
+  ANOMALY_ANALYSIS_QUEUE_NAME,
+} from './ai/trafficAnalyzer.js';
 import { createWorkerRedisClient } from './lib/redis.js';
 import { prisma } from './lib/prisma.js';
 
@@ -58,8 +64,9 @@ let workerInstance: Worker | null = null;
 
 /**
  * Starts the BullMQ worker service and initializes batch timers.
+ * Also boots the AI anomaly analysis scheduler and consumer.
  * 
- * @returns {Promise<Worker>} The active BullMQ Worker instance
+ * @returns {Promise<Worker>} The active BullMQ Worker instance (log processor)
  */
 export async function startWorker(): Promise<Worker> {
   try {
@@ -68,6 +75,10 @@ export async function startWorker(): Promise<Worker> {
 
     // Start batch flush timer and periodic metric reporting
     startBatchTimers();
+
+    // Register the hourly repeatable anomaly analysis job in Redis.
+    // This is idempotent — safe to call on every startup.
+    await setupAnomalyAnalysisSchedule();
 
     workerInstance = new Worker(
       REQUEST_LOGS_QUEUE_NAME,
@@ -86,6 +97,43 @@ export async function startWorker(): Promise<Worker> {
         },
       }
     );
+
+    // ── Anomaly Analysis Worker ───────────────────────────────────────────────
+    // A separate BullMQ Worker consumer for the analysis queue.
+    // Using a dedicated worker (concurrency: 1) ensures only one LLM call runs
+    // at a time — preventing parallel OpenAI calls that would double the cost.
+    const analysisConnection = createWorkerRedisClient();
+    const analysisWorker = new Worker(
+      ANOMALY_ANALYSIS_QUEUE_NAME,
+      async (job: Job) => {
+        console.log(`[Worker] Running scheduled traffic analysis (job #${job.id})...`);
+        const result = await runTrafficAnalysis();
+        console.log(`[Worker] Traffic analysis completed:`, {
+          reportId: result.reportId,
+          anomalyCount: result.anomalyCount,
+          overallRisk: result.overallRisk,
+        });
+      },
+      {
+        connection: analysisConnection,
+        concurrency: 1, // Never run two LLM analyses simultaneously
+        settings: {
+          backoffStrategy: () => 30_000, // Fixed 30s retry delay for AI jobs
+        },
+      }
+    );
+
+    analysisWorker.on('completed', (job: Job) => {
+      console.log(`[Worker] Analysis job #${job.id} completed successfully.`);
+    });
+
+    analysisWorker.on('failed', (job: Job | undefined, err: Error) => {
+      console.error(`[Worker] Analysis job #${job?.id} failed:`, { error: err.message });
+    });
+
+    analysisWorker.on('error', (err: Error) => {
+      console.error('[Worker AI Analysis Error]:', { message: err.message });
+    });
 
     // Event handler: Job successfully processed and batched
     workerInstance.on('completed', (job: Job) => {
@@ -121,6 +169,7 @@ export async function startWorker(): Promise<Worker> {
     });
 
     console.log(`[Worker] GateForge Worker service listening on "${REQUEST_LOGS_QUEUE_NAME}" (concurrency: ${config.concurrency})`);
+    console.log(`[Worker] AI Anomaly Analyzer active on "${ANOMALY_ANALYSIS_QUEUE_NAME}" (hourly schedule)`);
 
     return workerInstance;
   } catch (error: unknown) {
@@ -151,6 +200,9 @@ export async function gracefulWorkerShutdown(signal: string): Promise<void> {
 
     // Stop timers, flush pending batch items, close DLQ
     await stopLogProcessor();
+
+    // Close the anomaly analysis schedule queue connection
+    await stopAnalysisScheduler();
 
     // Disconnect Prisma PostgreSQL connection pool
     await prisma.$disconnect();

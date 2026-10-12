@@ -17,3 +17,4 @@ startWorker().catch((err: unknown) => {
 
 export * from './worker.js';
 export * from './processors/logProcessor.js';
+export * from './ai/trafficAnalyzer.js';

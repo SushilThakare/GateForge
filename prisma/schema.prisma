@@ -76,3 +76,59 @@ model RequestLog {
   @@index([apiKeyId, timestamp])
   @@index([timestamp])
 }
+
+/// Severity level of an AI-detected anomaly
+enum AnomalySeverity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+/// Category of traffic anomaly detected by the AI analyzer
+enum AnomalyType {
+  TRAFFIC_SPIKE
+  HIGH_ERROR_RATE
+  DDOS_PATTERN
+  RESPONSE_DEGRADATION
+  UNUSUAL_ENDPOINT
+  UNKNOWN
+}
+
+/// Overall risk level of the traffic window assessed by AI
+enum RiskLevel {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+/// AI-generated anomaly report for a 1-hour traffic analysis window
+model AnomalyReport {
+  id          String       @id @default(uuid())
+  windowStart DateTime     /// Start of the 1-hour analysis window
+  windowEnd   DateTime     /// End of the 1-hour analysis window
+  summary     String       /// 1-2 sentence AI overview of the window
+  overallRisk RiskLevel    @default(LOW)
+  anomalies   Anomaly[]
+  createdAt   DateTime     @default(now())
+
+  @@index([windowStart])
+  @@index([createdAt])
+}
+
+/// Individual anomaly detected within an AnomalyReport
+model Anomaly {
+  id              String          @id @default(uuid())
+  reportId        String
+  report          AnomalyReport   @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  type            AnomalyType
+  severity        AnomalySeverity
+  description     String          /// Human-readable description of the anomaly
+  evidence        String          /// Supporting data / numbers that justify the detection
+  recommendation  String          /// Actionable mitigation or investigation step
+  createdAt       DateTime        @default(now())
+
+  @@index([reportId])
+  @@index([severity])
+}
