@@ -10,9 +10,11 @@
  * 5. Rate Limiting (rateLimitMiddleware → rateLimiter → slidingWindow / tokenBucket)
  * 6. Administrative Management Routes (/api/keys guarded by ADMIN scope)
  * 7. Downstream Proxy & Upstream Forwarding (/v1/proxy/*)
+ * 8. Error handling (handles 400 bad JSON and 500 internal errors)
  */
 
 import express, { Express, Request, Response, NextFunction } from 'express';
+import { Server } from 'http';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import { ApiKeyScope } from '@prisma/client';
@@ -56,119 +58,194 @@ export function getGatewayConfig(): GatewayConfig {
 }
 
 /**
- * Starts the Express Gateway server and registers base routes, auth middleware, and error handlers.
- * 
- * @returns {Promise<void>} Resolves when server is bound and listening
+ * Factory function creating and configuring the Express Gateway application instance.
+ * Separated from startGatewayServer() to allow Supertest integration tests to mount
+ * the application without binding to a physical TCP socket port.
+ *
+ * @returns {Express} Configured Express application instance ready for listening or testing
  */
-export async function startGatewayServer(): Promise<void> {
-  try {
-    const config = getGatewayConfig();
-    const app: Express = express();
+export function createGatewayApp(): Express {
+  const app: Express = express();
 
-    // 1. CORS — must come first so browser preflight (OPTIONS) requests are answered
-    // immediately without hitting auth or rate limiting middleware.
-    // In production, replace origin: '*' with an explicit allowlist of trusted domains.
-    app.use(cors({
-      origin: process.env.CORS_ORIGIN ?? '*',
-      methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-      allowedHeaders: ['Content-Type', 'X-API-Key', 'Authorization'],
-      // Expose rate-limit headers so browser JS can read them from fetch() responses
-      exposedHeaders: [
-        'X-RateLimit-Limit',
-        'X-RateLimit-Remaining',
-        'X-RateLimit-Reset',
-        'X-RateLimit-Strategy',
-        'Retry-After',
-      ],
-      maxAge: 86_400, // Cache preflight response for 24h to reduce OPTIONS round-trips
-    }));
+  // 1. CORS — must come first so browser preflight (OPTIONS) requests are answered
+  // immediately without hitting auth or rate limiting middleware.
+  app.use(cors({
+    origin: process.env.CORS_ORIGIN ?? '*',
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'X-API-Key', 'Authorization', 'X-Target-Url'],
+    exposedHeaders: [
+      'X-RateLimit-Limit',
+      'X-RateLimit-Remaining',
+      'X-RateLimit-Reset',
+      'X-RateLimit-Strategy',
+      'Retry-After',
+    ],
+    maxAge: 86_400,
+  }));
 
-    // 2. Standard JSON body parser for incoming gateway payloads
-    app.use(express.json());
+  // 2. Standard JSON body parser for incoming gateway payloads
+  app.use(express.json());
 
-    // 3. Health check endpoint (exempt from API key auth for container orchestrators and load balancers)
-    app.get('/health', (_req: Request, res: Response) => {
-      res.status(200).json({ status: 'ok', service: 'gateway', timestamp: new Date().toISOString() });
-    });
+  // 3. Health check endpoint (exempt from API key auth for container orchestrators and load balancers)
+  app.get('/health', (_req: Request, res: Response) => {
+    res.status(200).json({ status: 'ok', service: 'gateway', timestamp: new Date().toISOString() });
+  });
 
-    // 3. API Key Authentication Middleware
-    // Validates caller identity against Redis / PostgreSQL BEFORE allowing access to downstream services
-    app.use(apiKeyAuth);
+  // 4. API Key Authentication Middleware
+  // Validates caller identity against Redis / PostgreSQL BEFORE allowing access to downstream services
+  app.use(apiKeyAuth);
 
-    // 4. Sliding Window Rate Limiter
-    // Checks per-API-key request quotas atomically using a Redis ZSET + Lua script.
-    // Must run after apiKeyAuth so req.apiKey (keyId, limit) is available.
-    app.use(rateLimitMiddleware);
+  // 5. Rate Limiter Middleware
+  // Checks per-API-key request quotas atomically using Redis sliding window / token bucket.
+  app.use(rateLimitMiddleware);
 
-    // 5. Key Management Endpoints (Requires ADMIN scope)
-    app.use('/api/keys', requireScope(ApiKeyScope.ADMIN), keyRouter);
+  // 6. Key Management Endpoints (Requires ADMIN scope)
+  app.use('/api/keys', requireScope(ApiKeyScope.ADMIN), keyRouter);
 
-    // 6. Log Viewer & Analytics Endpoints (Requires ADMIN scope)
-    app.use('/api/logs', requireScope(ApiKeyScope.ADMIN), logRouter);
+  // 7. Log Viewer & Analytics Endpoints (Requires ADMIN scope)
+  app.use('/api/logs', requireScope(ApiKeyScope.ADMIN), logRouter);
 
-    // 7. AI Anomaly Detection Endpoints (Requires ADMIN scope)
-    app.use('/api/anomalies', requireScope(ApiKeyScope.ADMIN), anomalyRouter);
+  // 8. AI Anomaly Detection Endpoints (Requires ADMIN scope)
+  app.use('/api/anomalies', requireScope(ApiKeyScope.ADMIN), anomalyRouter);
 
-    // 8. Downstream Proxy Route Handler (Stub representing upstream service proxy forwarding)
-    app.all('/v1/proxy/*', (req: Request, res: Response) => {
-      // Record request start time BEFORE any response work — wall-clock milliseconds
-      const requestStartMs = Date.now();
+  // 9. Downstream Proxy Route Handler & Upstream Forwarding
+  app.all('/v1/proxy/*', async (req: Request, res: Response) => {
+    const requestStartMs = Date.now();
+    const apiKeyId =
+      req.apiKey?.id && req.apiKey.id !== '00000000-0000-0000-0000-000000000000'
+        ? req.apiKey.id
+        : null;
 
-      // Capture the API key ID once; req.apiKey is guaranteed by apiKeyAuth middleware
-      const apiKeyId = req.apiKey?.id ?? null;
+    // Check if an explicit target URL is configured via header or environment variable
+    const targetUrlHeader = req.headers['x-target-url'] as string | undefined;
+    const targetBase = targetUrlHeader || process.env.UPSTREAM_TARGET_URL;
 
-      // ── Response logging hook ───────────────────────────────────────────────
-      // res.on('finish') fires AFTER the HTTP response has been fully written and
-      // flushed to the OS TCP buffer — i.e., the client has received it.
-      // This guarantees the log enqueue NEVER adds latency to the response itself.
-      res.on('finish', () => {
-        // Enqueue the log job without awaiting — pure fire-and-forget.
-        // If this throws (e.g., Redis is down), the .catch() inside enqueueRequestLog
-        // swallows the error so it can NEVER propagate back and cause an unhandled rejection.
-        enqueueRequestLog({
+    if (targetBase) {
+      try {
+        const proxySubPath = req.params[0] ?? '';
+        const targetUrl = new URL(proxySubPath, targetBase.endsWith('/') ? targetBase : `${targetBase}/`).toString();
+
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 5000);
+
+        const upstreamResponse = await fetch(targetUrl, {
           method: req.method,
-          path: req.path,
-          statusCode: res.statusCode,
-          responseTimeMs: Date.now() - requestStartMs,
-          apiKeyId,
-          // req.ip may be undefined behind a proxy; fall back to the socket remote address
-          clientIp: req.ip ?? req.socket?.remoteAddress ?? 'unknown',
-          userAgent: (req.headers['user-agent'] as string | undefined) ?? 'unknown',
-          timestamp: new Date().toISOString(),
+          headers: {
+            'Content-Type': req.headers['content-type'] || 'application/json',
+            'X-Forwarded-For': req.ip || '127.0.0.1',
+          },
+          body: ['GET', 'HEAD'].includes(req.method) ? undefined : JSON.stringify(req.body),
+          signal: controller.signal,
         });
-        // Intentionally NOT awaiting — response is already sent, we just schedule the work
-      });
+        clearTimeout(timeout);
 
-      // Downstream middleware and handlers now have guaranteed access to req.apiKey
-      res.status(200).json({
-        message: 'Proxy request received and authenticated',
-        path: req.path,
+        const upstreamData = await upstreamResponse.text();
+
+        res.on('finish', () => {
+          enqueueRequestLog({
+            method: req.method,
+            path: req.path,
+            statusCode: res.statusCode,
+            responseTimeMs: Date.now() - requestStartMs,
+            apiKeyId,
+            clientIp: req.ip ?? req.socket?.remoteAddress ?? 'unknown',
+            userAgent: (req.headers['user-agent'] as string | undefined) ?? 'unknown',
+            timestamp: new Date().toISOString(),
+          });
+        });
+
+        res.status(upstreamResponse.status).send(upstreamData);
+        return;
+      } catch (targetErr: unknown) {
+        // Target is down / unreachable / timed out -> return HTTP 502 Bad Gateway
+        res.on('finish', () => {
+          enqueueRequestLog({
+            method: req.method,
+            path: req.path,
+            statusCode: 502,
+            responseTimeMs: Date.now() - requestStartMs,
+            apiKeyId,
+            clientIp: req.ip ?? req.socket?.remoteAddress ?? 'unknown',
+            userAgent: (req.headers['user-agent'] as string | undefined) ?? 'unknown',
+            timestamp: new Date().toISOString(),
+          });
+        });
+
+        res.status(502).json({
+          error: 'Bad Gateway',
+          message: 'Upstream target service is unavailable or timed out.',
+          details: targetErr instanceof Error ? targetErr.message : String(targetErr),
+        });
+        return;
+      }
+    }
+
+    // Default mock response when no live external upstream target is specified
+    res.on('finish', () => {
+      enqueueRequestLog({
         method: req.method,
-        client: {
-          id: req.apiKey?.id,
-          name: req.apiKey?.name,
-          scopes: req.apiKey?.scopes,
-          rateLimit: req.apiKey?.rateLimit,
-        },
+        path: req.path,
+        statusCode: res.statusCode,
+        responseTimeMs: Date.now() - requestStartMs,
+        apiKeyId,
+        clientIp: req.ip ?? req.socket?.remoteAddress ?? 'unknown',
+        userAgent: (req.headers['user-agent'] as string | undefined) ?? 'unknown',
         timestamp: new Date().toISOString(),
       });
     });
 
-    // Root catch-all for authenticated gateway routes
-    app.get('/', (req: Request, res: Response) => {
-      res.status(200).json({
-        message: 'GateForge API Gateway',
-        authenticatedAs: req.apiKey?.name,
+    res.status(200).json({
+      message: 'Proxy request received and authenticated',
+      path: req.path,
+      method: req.method,
+      client: {
+        id: req.apiKey?.id,
+        name: req.apiKey?.name,
         scopes: req.apiKey?.scopes,
-      });
+        rateLimit: req.apiKey?.rateLimit,
+      },
+      timestamp: new Date().toISOString(),
     });
+  });
 
-    // 6. Global uncaught express error handler to ensure JSON errors are returned instead of HTML stacktraces
-    app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
-      // Log full error context for debugging in container stdout logs
-      console.error('[Gateway Error Context]:', { message: err.message, stack: err.stack });
-      res.status(500).json({ error: 'Internal Gateway Error', message: err.message });
+  // Root catch-all for authenticated gateway routes
+  app.get('/', (req: Request, res: Response) => {
+    res.status(200).json({
+      message: 'GateForge API Gateway',
+      authenticatedAs: req.apiKey?.name,
+      scopes: req.apiKey?.scopes,
     });
+  });
+
+  // Global error handler
+  app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
+    // Detect JSON body parser syntax errors (malformed request -> 400)
+    if ('status' in err && (err as { status: number }).status === 400) {
+      res.status(400).json({
+        error: 'Bad Request',
+        message: 'Malformed request payload. Unable to parse JSON.',
+        details: err.message,
+      });
+      return;
+    }
+
+    // Log full error context for debugging in container stdout logs
+    console.error('[Gateway Error Context]:', { message: err.message, stack: err.stack });
+    res.status(500).json({ error: 'Internal Gateway Error', message: err.message });
+  });
+
+  return app;
+}
+
+/**
+ * Starts the Express Gateway server and registers base routes, auth middleware, and error handlers.
+ * 
+ * @returns {Promise<Server>} Resolves when server is bound and listening
+ */
+export async function startGatewayServer(): Promise<Server> {
+  try {
+    const config = getGatewayConfig();
+    const app = createGatewayApp();
 
     const server = app.listen(config.port, () => {
       console.log(`[Gateway] Gateway service running on port ${config.port} (${config.nodeEnv})`);
@@ -179,12 +256,11 @@ export async function startGatewayServer(): Promise<void> {
       console.log(`[Gateway] Received ${signal}. Starting graceful shutdown...`);
       server.close(async () => {
         try {
-          // Close all persistent connections in order:
-          // 1. BullMQ queue (flushes any in-flight Redis pipeline commands)
+          // Close BullMQ queue producer
           await closeRequestLogsQueue();
-          // 2. ioredis client used by auth/rate-limit subsystems
+          // Close ioredis connection
           await redis.quit();
-          // 3. Prisma connection pool to PostgreSQL
+          // Disconnect Prisma PostgreSQL connection pool
           await prisma.$disconnect();
           console.log('[Gateway] Closed database and Redis connections cleanly.');
           process.exit(0);
@@ -197,6 +273,8 @@ export async function startGatewayServer(): Promise<void> {
 
     process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
     process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+
+    return server;
   } catch (error) {
     // Log explicit failure reason when initialization or socket binding throws
     console.error('[Gateway Fatal Startup Failure]:', {
@@ -207,5 +285,7 @@ export async function startGatewayServer(): Promise<void> {
   }
 }
 
-// Boot up the gateway service
-startGatewayServer();
+// Boot up the gateway service in non-test environments
+if (process.env.NODE_ENV !== 'test') {
+  startGatewayServer();
+}

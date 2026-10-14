@@ -195,7 +195,10 @@ export async function flushBatch(): Promise<number> {
       }
 
       return {
-        apiKeyId: item.data.apiKeyId || null,
+        apiKeyId:
+          item.data.apiKeyId && item.data.apiKeyId !== '00000000-0000-0000-0000-000000000000'
+            ? item.data.apiKeyId
+            : null,
         path: item.data.path,
         method: item.data.method,
         statusCode: item.data.statusCode,
