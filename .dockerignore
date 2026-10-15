@@ -1,0 +1,45 @@
+# ── node_modules ──────────────────────────────────────────────────────────────
+# Never copy host node_modules into the image — they're OS-specific binaries.
+# Docker will install its own inside the container.
+**/node_modules
+
+# ── Build outputs ─────────────────────────────────────────────────────────────
+**/dist
+**/.next
+**/build
+**/coverage
+
+# ── Git & Editor ──────────────────────────────────────────────────────────────
+.git
+.gitignore
+.github
+.vscode
+.idea
+.DS_Store
+
+# ── Logs & temp files ────────────────────────────────────────────────────────
+**/*.log
+npm-debug.log*
+*.tsbuildinfo
+.turbo
+
+# ── Environment files — NEVER bake secrets into images ───────────────────────
+.env
+.env.*
+!.env.example
+
+# ── Test files — not needed in production images ─────────────────────────────
+**/*.test.ts
+**/*.spec.ts
+**/tests
+**/coverage
+
+# ── Documentation ─────────────────────────────────────────────────────────────
+README.md
+*.md
+docs/
+
+# ── Docker files themselves ───────────────────────────────────────────────────
+Dockerfile*
+docker-compose*.yml
+Makefile

@@ -1,97 +1,204 @@
+# =============================================================================
+# docker-compose.yml — Production baseline configuration for GateForge.
+#
+# This file defines the "canonical" state of every service.
+# docker-compose.dev.yml overrides specific keys for local development.
+#
+# Usage:
+#   Production:  docker compose up
+#   Development: docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+#   (or simply:  make dev)
+# =============================================================================
+
 version: '3.8'
 
+# ── Custom bridge network ────────────────────────────────────────────────────
+# All services join this network. Docker's embedded DNS resolver allows
+# containers to reach each other by service name (e.g. "postgres", "redis").
+# Without a named network, services only share the default bridge which doesn't
+# guarantee DNS-based service discovery across compose files.
+networks:
+  gateforge_net:
+    driver: bridge
+
+# ── Named volumes ─────────────────────────────────────────────────────────────
+# Volumes exist independently of containers. When `docker compose down` is run
+# (without --volumes), the postgres_data volume survives — meaning your data
+# persists across restarts. `docker compose down -v` removes them.
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+
 services:
-  # PostgreSQL Database - Primary relational store for API keys, rate limit rules, and logs
+
+  # ── PostgreSQL 16 ───────────────────────────────────────────────────────────
   postgres:
     image: postgres:16-alpine
     container_name: gateforge_postgres
-    restart: always
+    restart: unless-stopped
+    networks:
+      - gateforge_net
     environment:
-      POSTGRES_USER: gateforge_user
-      POSTGRES_PASSWORD: gateforge_password
-      POSTGRES_DB: gateforge_db
+      POSTGRES_USER: ${POSTGRES_USER:-gateforge_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-gateforge_password}
+      POSTGRES_DB: ${POSTGRES_DB:-gateforge_db}
     ports:
-      - "5432:5432"
+      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
+      # Named volume → data survives container restarts and re-creates.
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U gateforge_user -d gateforge_db"]
+      # pg_isready exits 0 only once Postgres accepts connections.
+      # depends_on + condition: service_healthy means gateway/worker won't start
+      # until this passes — preventing "ECONNREFUSED" crashes on boot.
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-gateforge_user} -d ${POSTGRES_DB:-gateforge_db}"]
       interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 10
+      start_period: 10s
 
-  # Redis Store - In-memory database for ultra-low latency sliding window rate limit counters & BullMQ job queues
+  # ── Redis 7 ─────────────────────────────────────────────────────────────────
   redis:
     image: redis:7-alpine
     container_name: gateforge_redis
-    restart: always
+    restart: unless-stopped
+    networks:
+      - gateforge_net
     ports:
-      - "6379:6379"
+      - "${REDIS_PORT:-6379}:6379"
     volumes:
       - redis_data:/data
+    # --appendonly yes enables AOF persistence so Redis doesn't lose queue jobs
+    # on restart. For pure caching use-cases this can be disabled.
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 10
+      start_period: 5s
 
-  # Gateway Service - Low-latency Express + TypeScript proxy server evaluating rate limits
+  # ── Prisma Migrate (one-shot job) ────────────────────────────────────────────
+  # Runs `prisma migrate deploy` on every `docker compose up` to apply any
+  # pending migrations before the app services start.
+  # restart: "no" ensures it doesn't loop; it exits 0 after migrations are done.
+  migrate:
+    image: node:20-alpine
+    container_name: gateforge_migrate
+    restart: "no"
+    networks:
+      - gateforge_net
+    working_dir: /app
+    environment:
+      DATABASE_URL: "postgresql://${POSTGRES_USER:-gateforge_user}:${POSTGRES_PASSWORD:-gateforge_password}@postgres:5432/${POSTGRES_DB:-gateforge_db}?schema=public"
+    volumes:
+      # Mount prisma folder from host so migrations run against the latest schema.
+      - ./prisma:/app/prisma
+    # Use npx directly from the node image. No build needed for this job.
+    command: >
+      sh -c "npm install -g prisma@5 --quiet &&
+             prisma migrate deploy"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # ── Gateway ──────────────────────────────────────────────────────────────────
   gateway:
     build:
       context: .
       dockerfile: packages/gateway/Dockerfile
+      # Build args let us pass dynamic values into the Dockerfile at build time.
+      args:
+        NODE_ENV: production
+    image: gateforge/gateway:latest
     container_name: gateforge_gateway
-    restart: "no"
+    restart: unless-stopped
+    networks:
+      - gateforge_net
     ports:
-      - "3000:3000"
+      - "${GATEWAY_PORT:-3000}:3000"
     environment:
-      NODE_ENV: development
+      NODE_ENV: production
       GATEWAY_PORT: 3000
-      DATABASE_URL: "postgresql://gateforge_user:gateforge_password@postgres:5432/gateforge_db?schema=public"
-      REDIS_HOST: "redis"
+      # Services talk to "postgres" and "redis" by name — Docker DNS resolves these.
+      DATABASE_URL: "postgresql://${POSTGRES_USER:-gateforge_user}:${POSTGRES_PASSWORD:-gateforge_password}@postgres:5432/${POSTGRES_DB:-gateforge_db}?schema=public"
+      REDIS_HOST: redis
       REDIS_PORT: 6379
       REDIS_URL: "redis://redis:6379"
+      GATEWAY_SECRET: ${GATEWAY_SECRET:-super-secret-gateway-signing-key}
+      GATEWAY_ADMIN_KEY: ${GATEWAY_ADMIN_KEY:-gf_admin_dashboard_key}
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
 
-  # Worker Service - Asynchronous BullMQ consumer reading telemetry off Redis queue to persist logs into Postgres
+  # ── Worker ───────────────────────────────────────────────────────────────────
   worker:
     build:
       context: .
       dockerfile: packages/worker/Dockerfile
+      args:
+        NODE_ENV: production
+    image: gateforge/worker:latest
     container_name: gateforge_worker
-    restart: "no"
+    restart: unless-stopped
+    networks:
+      - gateforge_net
     environment:
-      NODE_ENV: development
-      DATABASE_URL: "postgresql://gateforge_user:gateforge_password@postgres:5432/gateforge_db?schema=public"
-      REDIS_HOST: "redis"
+      NODE_ENV: production
+      DATABASE_URL: "postgresql://${POSTGRES_USER:-gateforge_user}:${POSTGRES_PASSWORD:-gateforge_password}@postgres:5432/${POSTGRES_DB:-gateforge_db}?schema=public"
+      REDIS_HOST: redis
       REDIS_PORT: 6379
       REDIS_URL: "redis://redis:6379"
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
 
-  # Dashboard Service - Next.js 14 App Router web analytics UI & gateway management panel
+  # ── Dashboard ────────────────────────────────────────────────────────────────
   dashboard:
     build:
       context: .
       dockerfile: packages/dashboard/Dockerfile
+      args:
+        NODE_ENV: production
+    image: gateforge/dashboard:latest
     container_name: gateforge_dashboard
-    restart: "no"
+    restart: unless-stopped
+    networks:
+      - gateforge_net
     ports:
-      - "3001:3001"
+      - "${DASHBOARD_PORT:-3001}:3001"
     environment:
-      NODE_ENV: development
-      DATABASE_URL: "postgresql://gateforge_user:gateforge_password@postgres:5432/gateforge_db?schema=public"
+      NODE_ENV: production
+      PORT: 3001
+      HOSTNAME: "0.0.0.0"
+      DATABASE_URL: "postgresql://${POSTGRES_USER:-gateforge_user}:${POSTGRES_PASSWORD:-gateforge_password}@postgres:5432/${POSTGRES_DB:-gateforge_db}?schema=public"
+      GATEWAY_URL: ${GATEWAY_URL:-http://gateway:3000}
+      GATEWAY_ADMIN_KEY: ${GATEWAY_ADMIN_KEY:-gf_admin_dashboard_key}
     depends_on:
       postgres:
         condition: service_healthy
-
-volumes:
-  postgres_data:
-  redis_data:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3001/api/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 45s

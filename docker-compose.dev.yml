@@ -1,0 +1,103 @@
+# =============================================================================
+# docker-compose.dev.yml — Development overrides for GateForge.
+#
+# Docker Compose merges this file ON TOP of docker-compose.yml when you run:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+#   (alias: make dev)
+#
+# Only keys that DIFFER from production need to be here.
+# Anything not specified here falls back to docker-compose.yml.
+# =============================================================================
+
+version: '3.8'
+
+services:
+
+  # ── Gateway (dev) ────────────────────────────────────────────────────────────
+  gateway:
+    # In development we skip the multi-stage build and run directly from source.
+    # The `build.target` key selects just the builder stage, which has all devDeps.
+    build:
+      target: builder
+    # Override the production start command with tsx watch (hot-reload).
+    # tsx watch re-compiles and restarts on every .ts file save.
+    command: npx tsx watch packages/gateway/src/index.ts
+    environment:
+      NODE_ENV: development
+      GATEWAY_PORT: 3000
+      DATABASE_URL: "postgresql://${POSTGRES_USER:-gateforge_user}:${POSTGRES_PASSWORD:-gateforge_password}@postgres:5432/${POSTGRES_DB:-gateforge_db}?schema=public"
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_URL: "redis://redis:6379"
+      GATEWAY_SECRET: ${GATEWAY_SECRET:-dev-secret}
+      GATEWAY_ADMIN_KEY: ${GATEWAY_ADMIN_KEY:-gf_admin_dev_key}
+    volumes:
+      # Mount the host source directly into the container so file-watchers detect
+      # changes without rebuilding the image. The node_modules inside the image
+      # are kept separate to avoid host/container platform mismatches.
+      - ./packages/gateway/src:/app/packages/gateway/src:delegated
+      - ./prisma:/app/prisma:ro
+    ports:
+      - "3000:3000"
+      # Node.js debugger port — attach VS Code or Chrome DevTools to this.
+      - "9229:9229"
+
+  # ── Worker (dev) ─────────────────────────────────────────────────────────────
+  worker:
+    build:
+      target: builder
+    command: npx tsx watch packages/worker/src/index.ts
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: "postgresql://${POSTGRES_USER:-gateforge_user}:${POSTGRES_PASSWORD:-gateforge_password}@postgres:5432/${POSTGRES_DB:-gateforge_db}?schema=public"
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_URL: "redis://redis:6379"
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+    volumes:
+      - ./packages/worker/src:/app/packages/worker/src:delegated
+      - ./prisma:/app/prisma:ro
+    ports:
+      # Worker debugger on a different port to avoid conflict with gateway.
+      - "9230:9229"
+
+  # ── Dashboard (dev) ──────────────────────────────────────────────────────────
+  dashboard:
+    # Use the builder stage which has all devDeps including the Next.js dev server.
+    build:
+      target: builder
+    # `next dev` enables Fast Refresh (React HMR), source maps, and error overlays.
+    command: npx next dev -p 3001 --hostname 0.0.0.0
+    working_dir: /app/packages/dashboard
+    environment:
+      NODE_ENV: development
+      PORT: 3001
+      DATABASE_URL: "postgresql://${POSTGRES_USER:-gateforge_user}:${POSTGRES_PASSWORD:-gateforge_password}@postgres:5432/${POSTGRES_DB:-gateforge_db}?schema=public"
+      GATEWAY_URL: ${GATEWAY_URL:-http://gateway:3000}
+      GATEWAY_ADMIN_KEY: ${GATEWAY_ADMIN_KEY:-gf_admin_dev_key}
+      # Disable Next.js telemetry in dev.
+      NEXT_TELEMETRY_DISABLED: 1
+    volumes:
+      - ./packages/dashboard/src:/app/packages/dashboard/src:delegated
+      - ./packages/dashboard/public:/app/packages/dashboard/public:delegated
+      - ./packages/dashboard/next.config.js:/app/packages/dashboard/next.config.js:ro
+      - ./prisma:/app/prisma:ro
+    ports:
+      - "3001:3001"
+    # Disable the healthcheck in dev — the Next.js dev server starts slowly and
+    # we don't want container restarts disrupting a development session.
+    healthcheck:
+      disable: true
+
+  # ── Postgres (dev tweaks) ────────────────────────────────────────────────────
+  postgres:
+    # Expose a shorter healthcheck interval in dev for faster feedback.
+    healthcheck:
+      interval: 3s
+      retries: 5
+
+  # ── Redis (dev tweaks) ───────────────────────────────────────────────────────
+  redis:
+    healthcheck:
+      interval: 3s
+      retries: 5
