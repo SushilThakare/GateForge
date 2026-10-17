@@ -1,8 +1,8 @@
 /**
  * @file packages/dashboard/tailwind.config.js
  * @description Tailwind CSS configuration file for GateForge Dashboard.
- * Defines theme extensions, Tremor v3 dark mode color tokens, and content search paths
- * so Tremor primitives (Card, Metric, AreaChart, BarChart, Table) render with optimal styling.
+ * Configured with Geist + Geist Mono font families, warm stone neutrals,
+ * Tremor v3 dark mode tokens mapped to warm stone and Persimmon Orange accent (#F97316).
  */
 
 /** @type {import('tailwindcss').Config} */
@@ -17,64 +17,82 @@ module.exports = {
     transparent: 'transparent',
     current: 'currentColor',
     extend: {
+      fontFamily: {
+        sans: ['var(--font-geist-sans)', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'Roboto', 'sans-serif'],
+        mono: ['var(--font-geist-mono)', 'monospace'],
+      },
       colors: {
-        // Tremor dark mode tokens
+        // Persimmon orange brand tokens
+        persimmon: {
+          50: '#fff7ed',
+          100: '#ffedd5',
+          200: '#fed7aa',
+          300: '#fdba74',
+          400: '#fb923c',
+          500: '#f97316',
+          600: '#ea580c',
+          700: '#c2410c',
+          800: '#9a3412',
+          900: '#7c2d12',
+          950: '#431407',
+        },
+        // Tremor dark mode tokens with warm stone & persimmon accents
         'dark-tremor': {
           brand: {
-            faint: '#0b1329',
-            muted: '#1e293b',
-            subtle: '#2563eb',
-            DEFAULT: '#38bdf8',
-            emphasis: '#60a5fa',
-            inverted: '#020617',
+            faint: '#291407',
+            muted: '#431407',
+            subtle: '#c2410c',
+            DEFAULT: '#f97316',
+            emphasis: '#fb923c',
+            inverted: '#0c0a09',
           },
           background: {
-            muted: '#090d16',
-            subtle: '#0f172a',
-            DEFAULT: '#0b0f19',
-            emphasis: '#1e293b',
+            muted: '#1c1917',
+            subtle: '#141210',
+            DEFAULT: '#1c1917',
+            emphasis: '#292524',
           },
           border: {
-            DEFAULT: '#1e293b',
+            DEFAULT: '#292524',
           },
           ring: {
-            DEFAULT: '#1e293b',
+            DEFAULT: '#292524',
           },
           content: {
-            subtle: '#64748b',
-            DEFAULT: '#94a3b8',
-            emphasis: '#e2e8f0',
-            strong: '#f8fafc',
+            subtle: '#78716c',
+            DEFAULT: '#a8a29e',
+            emphasis: '#e7e5e4',
+            strong: '#fafaf9',
             inverted: '#000000',
           },
         },
-        // Tremor standard tokens (mapped to dark palette for default dark developer experience)
+        // Tremor standard tokens mapped to dark stone palette
         tremor: {
           brand: {
-            faint: '#0b1329',
-            muted: '#1e293b',
-            subtle: '#2563eb',
-            DEFAULT: '#38bdf8',
-            emphasis: '#60a5fa',
-            inverted: '#020617',
+            faint: '#291407',
+            muted: '#431407',
+            subtle: '#c2410c',
+            DEFAULT: '#f97316',
+            emphasis: '#fb923c',
+            inverted: '#0c0a09',
           },
           background: {
-            muted: '#090d16',
-            subtle: '#0f172a',
-            DEFAULT: '#0b0f19',
-            emphasis: '#1e293b',
+            muted: '#1c1917',
+            subtle: '#141210',
+            DEFAULT: '#1c1917',
+            emphasis: '#292524',
           },
           border: {
-            DEFAULT: '#1e293b',
+            DEFAULT: '#292524',
           },
           ring: {
-            DEFAULT: '#1e293b',
+            DEFAULT: '#292524',
           },
           content: {
-            subtle: '#64748b',
-            DEFAULT: '#94a3b8',
-            emphasis: '#e2e8f0',
-            strong: '#f8fafc',
+            subtle: '#78716c',
+            DEFAULT: '#a8a29e',
+            emphasis: '#e7e5e4',
+            strong: '#fafaf9',
             inverted: '#000000',
           },
         },
@@ -85,8 +103,8 @@ module.exports = {
         'dark-tremor-dropdown': '0 4px 6px -1px rgb(0 0 0 / 0.3), 0 2px 4px -2px rgb(0 0 0 / 0.3)',
       },
       borderRadius: {
-        'tremor-small': '0.375rem',
-        'tremor-default': '0.5rem',
+        'tremor-small': '0.5rem',
+        'tremor-default': '0.75rem',
         'tremor-full': '9999px',
       },
       fontSize: {
@@ -100,30 +118,30 @@ module.exports = {
   safelist: [
     {
       pattern:
-        /^(bg-(?:slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)-(?:50|100|200|300|400|500|600|700|800|900|950))$/,
+        /^(bg-(?:slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose|persimmon)-(?:50|100|200|300|400|500|600|700|800|900|950))$/,
       variants: ['hover', 'ui-selected'],
     },
     {
       pattern:
-        /^(text-(?:slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)-(?:50|100|200|300|400|500|600|700|800|900|950))$/,
+        /^(text-(?:slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose|persimmon)-(?:50|100|200|300|400|500|600|700|800|900|950))$/,
       variants: ['hover', 'ui-selected'],
     },
     {
       pattern:
-        /^(border-(?:slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)-(?:50|100|200|300|400|500|600|700|800|900|950))$/,
+        /^(border-(?:slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose|persimmon)-(?:50|100|200|300|400|500|600|700|800|900|950))$/,
       variants: ['hover', 'ui-selected'],
     },
     {
       pattern:
-        /^(ring-(?:slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)-(?:50|100|200|300|400|500|600|700|800|900|950))$/,
+        /^(ring-(?:slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose|persimmon)-(?:50|100|200|300|400|500|600|700|800|900|950))$/,
     },
     {
       pattern:
-        /^(stroke-(?:slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)-(?:50|100|200|300|400|500|600|700|800|900|950))$/,
+        /^(stroke-(?:slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose|persimmon)-(?:50|100|200|300|400|500|600|700|800|900|950))$/,
     },
     {
       pattern:
-        /^(fill-(?:slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)-(?:50|100|200|300|400|500|600|700|800|900|950))$/,
+        /^(fill-(?:slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose|persimmon)-(?:50|100|200|300|400|500|600|700|800|900|950))$/,
     },
   ],
   plugins: [],

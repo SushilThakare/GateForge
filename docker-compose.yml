@@ -81,9 +81,11 @@ services:
       start_period: 5s
 
   # ── Prisma Migrate (one-shot job) ────────────────────────────────────────────
-  # Runs `prisma migrate deploy` on every `docker compose up` to apply any
-  # pending migrations before the app services start.
-  # restart: "no" ensures it doesn't loop; it exits 0 after migrations are done.
+  # Applies the Prisma schema to the database before the app services start.
+  # Alpine requires openssl and libc6-compat for Prisma's native schema engine.
+  # Uses `prisma db push` because the project uses direct schema sync rather than
+  # migration files.
+  # restart: "no" ensures it doesn't loop; it exits 0 after sync is done.
   migrate:
     image: node:20-alpine
     container_name: gateforge_migrate
@@ -96,10 +98,10 @@ services:
     volumes:
       # Mount prisma folder from host so migrations run against the latest schema.
       - ./prisma:/app/prisma
-    # Use npx directly from the node image. No build needed for this job.
     command: >
-      sh -c "npm install -g prisma@5 --quiet &&
-             prisma migrate deploy"
+      sh -c "apk add --no-cache openssl libc6-compat &&
+             npm install -g prisma@5 --quiet &&
+             prisma db push --skip-generate"
     depends_on:
       postgres:
         condition: service_healthy

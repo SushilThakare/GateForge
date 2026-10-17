@@ -2,12 +2,12 @@
 
 /**
  * @file packages/dashboard/src/components/overview/TopEndpointsChart.tsx
- * @description Horizontal bar chart using Tremor BarChart for the GateForge Dashboard.
- * Displays the Top 5 most active gateway endpoints by total request volume.
+ * @description Horizontal bar chart using Tremor BarChart styled with Warm Stone and
+ * Persimmon Orange tones for the GateForge Dashboard overview.
  */
 
 import React from 'react';
-import { Card, Title, Text, BarChart, Flex, Badge } from '@tremor/react';
+import { Card, BarChart } from '@tremor/react';
 import { TopEndpointItem } from '../../types/stats';
 
 /**
@@ -24,7 +24,7 @@ export interface TopEndpointsChartProps {
  * @returns {JSX.Element} Rendered Tremor BarChart card
  */
 export function TopEndpointsChart({ endpoints }: TopEndpointsChartProps): JSX.Element {
-  // Format dataset for Tremor horizontal BarChart
+  // Format dataset for horizontal BarChart
   const chartData = (endpoints || []).map((item) => ({
     endpoint: item.endpoint,
     'Requests': item.count,
@@ -33,29 +33,27 @@ export function TopEndpointsChart({ endpoints }: TopEndpointsChartProps): JSX.El
   const maxTraffic = endpoints.length > 0 ? endpoints[0].count : 0;
 
   return (
-    <Card className="bg-slate-900/90 border border-slate-800 shadow-lg">
-      <Flex justifyContent="between" alignItems="center" className="mb-4">
+    <Card className="!bg-stone-900/40 !border-stone-800/80 shadow-xs !p-6 !rounded-xl">
+      <div className="flex items-center justify-between mb-6">
         <div>
-          <Title className="text-slate-100 font-bold text-lg">
-            Top 5 Endpoints
-          </Title>
-          <Text className="text-slate-400 text-xs">
+          <h3 className="text-sm font-semibold text-stone-100">Top 5 Endpoints</h3>
+          <p className="text-xs text-stone-400 mt-0.5">
             Most heavily trafficked downstream routes by request count
-          </Text>
+          </p>
         </div>
         {maxTraffic > 0 && (
-          <Badge size="sm" color="indigo">
+          <span className="px-2.5 py-1 rounded-full text-[11px] font-mono font-medium bg-persimmon-500/10 text-persimmon-400 border border-persimmon-500/20">
             Peak: {maxTraffic.toLocaleString()} reqs
-          </Badge>
+          </span>
         )}
-      </Flex>
+      </div>
 
       <BarChart
         className="h-72 mt-4"
         data={chartData}
         index="endpoint"
         categories={['Requests']}
-        colors={['sky']}
+        colors={['orange']}
         layout="horizontal"
         valueFormatter={(val: number) => val.toLocaleString()}
         showLegend={false}
