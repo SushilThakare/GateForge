@@ -2,24 +2,11 @@
 
 /**
  * @file packages/dashboard/src/components/overview/RecentErrorsTable.tsx
- * @description Recent errors table using Tremor Table primitives for the GateForge Dashboard.
- * Displays the last 10 failed requests (statusCode >= 400) with diagnostic metadata.
+ * @description Clean, spacious recent errors table using warm stone surfaces,
+ * crisp Geist typography, and refined status pills.
  */
 
 import React from 'react';
-import {
-  Card,
-  Title,
-  Text,
-  Table,
-  TableHead,
-  TableRow,
-  TableHeaderCell,
-  TableBody,
-  TableCell,
-  Badge,
-  Flex,
-} from '@tremor/react';
 import { AlertCircle, CheckCircle2 } from 'lucide-react';
 import { RecentErrorItem } from '../../types/stats';
 
@@ -49,91 +36,107 @@ function formatDateTime(isoString: string): string {
  * Renders the table of 10 most recent error logs.
  * 
  * @param {RecentErrorsTableProps} props - Array of failed request logs
- * @returns {JSX.Element} Rendered Tremor Table card
+ * @returns {JSX.Element} Rendered table component
  */
 export function RecentErrorsTable({ errors }: RecentErrorsTableProps): JSX.Element {
   const hasErrors = errors && errors.length > 0;
 
   return (
-    <Card className="bg-slate-900/90 border border-slate-800 shadow-lg">
-      <Flex justifyContent="between" alignItems="center" className="mb-4">
+    <div className="rounded-xl bg-stone-900/40 border border-stone-800/80 shadow-xs overflow-hidden">
+      <div className="p-6 border-b border-stone-800/80 flex items-center justify-between">
         <div>
-          <Title className="text-slate-100 font-bold text-lg">
+          <h3 className="text-sm font-semibold text-stone-100">
             Recent Errors (Last 10 Failures)
-          </Title>
-          <Text className="text-slate-400 text-xs">
+          </h3>
+          <p className="text-xs text-stone-400 mt-0.5">
             Live diagnostic stream of 4xx client errors and 5xx upstream failures
-          </Text>
+          </p>
         </div>
-        <Badge size="sm" color={hasErrors ? 'rose' : 'emerald'}>
+        <span
+          className={`px-2.5 py-1 rounded-full text-[11px] font-mono font-medium ${
+            hasErrors
+              ? 'bg-rose-500/10 text-rose-400 border border-rose-500/20'
+              : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+          }`}
+        >
           {hasErrors ? `${errors.length} recent logged` : '0 errors'}
-        </Badge>
-      </Flex>
+        </span>
+      </div>
 
       {!hasErrors ? (
-        <div className="py-12 flex flex-col items-center justify-center text-center">
-          <div className="w-12 h-12 rounded-full bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400 mb-3">
-            <CheckCircle2 className="w-6 h-6" />
+        <div className="py-14 flex flex-col items-center justify-center text-center">
+          <div className="w-10 h-10 rounded-full bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400 mb-3">
+            <CheckCircle2 className="w-5 h-5" />
           </div>
-          <h4 className="text-slate-200 font-semibold text-sm">All Systems Operational</h4>
-          <p className="text-slate-400 text-xs max-w-sm mt-1">
+          <h4 className="text-stone-200 font-semibold text-sm">All Systems Operational</h4>
+          <p className="text-stone-400 text-xs max-w-sm mt-1">
             No 4xx or 5xx request failures recorded in the current telemetry window.
           </p>
         </div>
       ) : (
         <div className="overflow-x-auto">
-          <Table className="mt-2">
-            <TableHead>
-              <TableRow className="border-b border-slate-800">
-                <TableHeaderCell className="text-slate-400 font-mono text-xs uppercase">Timestamp</TableHeaderCell>
-                <TableHeaderCell className="text-slate-400 font-mono text-xs uppercase">Method &amp; Path</TableHeaderCell>
-                <TableHeaderCell className="text-slate-400 font-mono text-xs uppercase">Status</TableHeaderCell>
-                <TableHeaderCell className="text-slate-400 font-mono text-xs uppercase">Latency</TableHeaderCell>
-                <TableHeaderCell className="text-slate-400 font-mono text-xs uppercase">Client IP</TableHeaderCell>
-                <TableHeaderCell className="text-slate-400 font-mono text-xs uppercase">API Key</TableHeaderCell>
-              </TableRow>
-            </TableHead>
-            <TableBody>
+          <table className="w-full text-left text-xs">
+            <thead className="text-stone-400 font-medium border-b border-stone-800/80 bg-stone-950/40">
+              <tr>
+                <th className="py-3 px-6 font-mono uppercase text-[11px]">Timestamp</th>
+                <th className="py-3 px-6 font-mono uppercase text-[11px]">Method &amp; Path</th>
+                <th className="py-3 px-6 font-mono uppercase text-[11px]">Status</th>
+                <th className="py-3 px-6 font-mono uppercase text-[11px]">Latency</th>
+                <th className="py-3 px-6 font-mono uppercase text-[11px]">Client IP</th>
+                <th className="py-3 px-6 font-mono uppercase text-[11px]">API Key</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-stone-800/60 text-stone-300">
               {errors.map((err) => {
                 const is5xx = err.statusCode >= 500;
-                const statusColor = is5xx ? 'rose' : 'amber';
 
                 return (
-                  <TableRow key={err.id} className="border-b border-slate-800/60 hover:bg-slate-800/30 transition-colors">
-                    <TableCell className="font-mono text-xs text-slate-300">
+                  <tr key={err.id} className="hover:bg-stone-800/30 transition">
+                    <td className="py-3.5 px-6 font-mono text-stone-400 whitespace-nowrap">
                       {formatDateTime(err.timestamp)}
-                    </TableCell>
-                    <TableCell>
-                      <div className="flex items-center gap-2">
-                        <span className="font-mono text-[11px] font-bold px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 border border-slate-700">
-                          {err.method}
-                        </span>
-                        <span className="font-mono text-xs text-slate-200 truncate max-w-xs" title={err.path}>
-                          {err.path}
-                        </span>
-                      </div>
-                    </TableCell>
-                    <TableCell>
-                      <Badge size="xs" color={statusColor}>
+                    </td>
+                    <td className="py-3.5 px-6 whitespace-nowrap">
+                      <span className="inline-block px-1.5 py-0.5 rounded text-[10px] font-bold font-mono bg-stone-800 text-stone-200 mr-2">
+                        {err.method}
+                      </span>
+                      <span className="font-mono text-stone-200">{err.path}</span>
+                    </td>
+                    <td className="py-3.5 px-6 whitespace-nowrap">
+                      <span
+                        className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full font-mono text-[11px] font-medium ${
+                          is5xx
+                            ? 'bg-rose-500/10 text-rose-400 border border-rose-500/20'
+                            : 'bg-persimmon-500/10 text-persimmon-400 border border-persimmon-500/20'
+                        }`}
+                      >
+                        <span
+                          className={`w-1.5 h-1.5 rounded-full ${
+                            is5xx ? 'bg-rose-400' : 'bg-persimmon-400'
+                          }`}
+                        />
                         {err.statusCode}
-                      </Badge>
-                    </TableCell>
-                    <TableCell className="font-mono text-xs text-slate-300">
-                      {err.responseTimeMs} ms
-                    </TableCell>
-                    <TableCell className="font-mono text-xs text-slate-400">
-                      {err.ipAddress}
-                    </TableCell>
-                    <TableCell className="text-xs text-slate-300 font-medium">
-                      {err.apiKeyName || <span className="text-slate-400 italic">Unauthenticated</span>}
-                    </TableCell>
-                  </TableRow>
+                      </span>
+                    </td>
+                    <td className="py-3.5 px-6 font-mono text-stone-400 whitespace-nowrap">
+                      {err.responseTimeMs.toFixed(1)} ms
+                    </td>
+                    <td className="py-3.5 px-6 font-mono text-stone-400 whitespace-nowrap">
+                      {err.ipAddress || '—'}
+                    </td>
+                    <td className="py-3.5 px-6 font-mono text-stone-400 whitespace-nowrap">
+                      {err.apiKeyName ? (
+                        <span className="text-stone-300">{err.apiKeyName}</span>
+                      ) : (
+                        <span className="text-stone-400 italic">None</span>
+                      )}
+                    </td>
+                  </tr>
                 );
               })}
-            </TableBody>
-          </Table>
+            </tbody>
+          </table>
         </div>
       )}
-    </Card>
+    </div>
   );
 }

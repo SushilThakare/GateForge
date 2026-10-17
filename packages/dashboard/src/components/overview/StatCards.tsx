@@ -2,8 +2,8 @@
 
 /**
  * @file packages/dashboard/src/components/overview/StatCards.tsx
- * @description Stat cards component using Tremor for the GateForge Dashboard overview page.
- * Displays 4 key operational metrics:
+ * @description Refined KPI Stat cards for GateForge Overview.
+ * Displays 4 key operational metrics with spacious layout and Persimmon accents:
  * 1. Total Requests (24h)
  * 2. Error Rate %
  * 3. Avg Response Time (ms)
@@ -11,7 +11,6 @@
  */
 
 import React from 'react';
-import { Card, Metric, Text, Flex, Badge } from '@tremor/react';
 import { Activity, AlertCircle, Clock, KeyRound } from 'lucide-react';
 import { LogStatisticsResponse } from '../../types/stats';
 
@@ -23,117 +22,117 @@ export interface StatCardsProps {
 }
 
 /**
- * Renders 4 primary KPI stat cards using Tremor primitives.
+ * Renders 4 primary KPI stat cards with warm stone styling and generous whitespace.
  * 
  * @param {StatCardsProps} props - Aggregated telemetry metrics
  * @returns {JSX.Element} Rendered grid of 4 stat cards
  */
 export function StatCards({ stats }: StatCardsProps): JSX.Element {
-  // Determine health color for error rate
-  const errorRateColor =
-    stats.errorRatePercent < 2
-      ? 'emerald'
-      : stats.errorRatePercent < 5
-      ? 'amber'
-      : 'rose';
+  const isErrorHigh = stats.errorRatePercent >= 5;
+  const isErrorModerate = stats.errorRatePercent >= 2 && stats.errorRatePercent < 5;
 
   return (
-    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
       {/* 1. Total Requests (24h) */}
-      <Card decoration="top" decorationColor="sky" className="bg-slate-900/90 border border-slate-800 shadow-lg">
-        <Flex justifyContent="between" alignItems="start">
-          <div>
-            <Text className="text-slate-400 font-medium text-xs uppercase tracking-wider">
-              Total Requests (24h)
-            </Text>
-            <Metric className="text-slate-100 font-bold tracking-tight mt-1 text-2xl lg:text-3xl">
-              {stats.totalRequests.toLocaleString()}
-            </Metric>
+      <div className="p-6 rounded-xl bg-stone-900/40 border border-stone-800/80 shadow-xs hover:border-stone-700/80 transition group">
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-medium text-stone-400">Total Requests (24h)</span>
+          <div className="p-2 rounded-lg bg-persimmon-500/10 text-persimmon-400">
+            <Activity className="w-4 h-4" />
           </div>
-          <div className="p-2.5 rounded-xl bg-sky-500/10 border border-sky-500/20 text-sky-400">
-            <Activity className="w-5 h-5" />
-          </div>
-        </Flex>
-        <div className="mt-3 pt-3 border-t border-slate-800/80 flex items-center justify-between text-xs text-slate-400">
+        </div>
+        <div className="mt-4 flex items-baseline gap-2">
+          <span className="text-3xl font-bold tracking-tight text-stone-100 font-mono">
+            {stats.totalRequests.toLocaleString()}
+          </span>
+        </div>
+        <div className="mt-3 pt-3 border-t border-stone-800/60 flex items-center justify-between text-xs text-stone-400">
           <span>Throughput</span>
-          <span className="font-mono text-slate-300 font-medium">
+          <span className="font-mono text-stone-300 font-medium">
             {stats.requestsPerMinute.toFixed(1)} req/min
           </span>
         </div>
-      </Card>
+      </div>
 
       {/* 2. Error Rate % */}
-      <Card
-        decoration="top"
-        decorationColor={errorRateColor}
-        className="bg-slate-900/90 border border-slate-800 shadow-lg"
-      >
-        <Flex justifyContent="between" alignItems="start">
-          <div>
-            <Text className="text-slate-400 font-medium text-xs uppercase tracking-wider">
-              Error Rate
-            </Text>
-            <Metric className="text-slate-100 font-bold tracking-tight mt-1 text-2xl lg:text-3xl">
-              {stats.errorRatePercent.toFixed(2)}%
-            </Metric>
+      <div className="p-6 rounded-xl bg-stone-900/40 border border-stone-800/80 shadow-xs hover:border-stone-700/80 transition group">
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-medium text-stone-400">Error Rate</span>
+          <div
+            className={`p-2 rounded-lg ${
+              isErrorHigh
+                ? 'bg-rose-500/10 text-rose-400'
+                : isErrorModerate
+                ? 'bg-persimmon-500/10 text-persimmon-400'
+                : 'bg-emerald-500/10 text-emerald-400'
+            }`}
+          >
+            <AlertCircle className="w-4 h-4" />
           </div>
-          <div className={`p-2.5 rounded-xl bg-${errorRateColor}-500/10 border border-${errorRateColor}-500/20 text-${errorRateColor}-400`}>
-            <AlertCircle className="w-5 h-5" />
-          </div>
-        </Flex>
-        <div className="mt-3 pt-3 border-t border-slate-800/80 flex items-center justify-between text-xs text-slate-400">
-          <span>Status 4xx / 5xx</span>
-          <Badge size="xs" color={errorRateColor}>
-            {stats.statusBreakdown.status4xx + stats.statusBreakdown.status5xx} errors
-          </Badge>
         </div>
-      </Card>
-
-      {/* 3. Avg Response Time */}
-      <Card decoration="top" decorationColor="cyan" className="bg-slate-900/90 border border-slate-800 shadow-lg">
-        <Flex justifyContent="between" alignItems="start">
-          <div>
-            <Text className="text-slate-400 font-medium text-xs uppercase tracking-wider">
-              Avg Response Time
-            </Text>
-            <Metric className="text-slate-100 font-bold tracking-tight mt-1 text-2xl lg:text-3xl">
-              {stats.avgResponseTimeMs.toFixed(1)} ms
-            </Metric>
-          </div>
-          <div className="p-2.5 rounded-xl bg-cyan-500/10 border border-cyan-500/20 text-cyan-400">
-            <Clock className="w-5 h-5" />
-          </div>
-        </Flex>
-        <div className="mt-3 pt-3 border-t border-slate-800/80 flex items-center justify-between text-xs text-slate-400">
-          <span>Latency p95</span>
-          <span className="font-mono text-slate-300 font-medium">
-            {stats.percentiles.p95.toFixed(1)} ms
+        <div className="mt-4 flex items-baseline gap-2">
+          <span
+            className={`text-3xl font-bold tracking-tight font-mono ${
+              isErrorHigh
+                ? 'text-rose-400'
+                : isErrorModerate
+                ? 'text-persimmon-400'
+                : 'text-stone-100'
+            }`}
+          >
+            {stats.errorRatePercent.toFixed(2)}%
           </span>
         </div>
-      </Card>
+        <div className="mt-3 pt-3 border-t border-stone-800/60 flex items-center justify-between text-xs text-stone-400">
+          <span>Status 4xx / 5xx</span>
+          <span className="font-mono text-stone-300 font-medium">
+            {stats.statusBreakdown.status4xx + stats.statusBreakdown.status5xx} errors
+          </span>
+        </div>
+      </div>
+
+      {/* 3. Avg Response Time */}
+      <div className="p-6 rounded-xl bg-stone-900/40 border border-stone-800/80 shadow-xs hover:border-stone-700/80 transition group">
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-medium text-stone-400">Avg Response Time</span>
+          <div className="p-2 rounded-lg bg-stone-800/80 text-stone-300">
+            <Clock className="w-4 h-4" />
+          </div>
+        </div>
+        <div className="mt-4 flex items-baseline gap-1">
+          <span className="text-3xl font-bold tracking-tight text-stone-100 font-mono">
+            {stats.avgResponseTimeMs.toFixed(1)}
+          </span>
+          <span className="text-sm font-medium text-stone-400 font-mono">ms</span>
+        </div>
+        <div className="mt-3 pt-3 border-t border-stone-800/60 flex items-center justify-between text-xs text-stone-400">
+          <span>Latency p95</span>
+          <span className="font-mono text-stone-300 font-medium">
+            {(stats.percentiles?.p95 ?? stats.avgResponseTimeMs).toFixed(1)} ms
+          </span>
+        </div>
+      </div>
 
       {/* 4. Active API Keys */}
-      <Card decoration="top" decorationColor="indigo" className="bg-slate-900/90 border border-slate-800 shadow-lg">
-        <Flex justifyContent="between" alignItems="start">
-          <div>
-            <Text className="text-slate-400 font-medium text-xs uppercase tracking-wider">
-              Active API Keys
-            </Text>
-            <Metric className="text-slate-100 font-bold tracking-tight mt-1 text-2xl lg:text-3xl">
-              {stats.activeApiKeys}
-            </Metric>
+      <div className="p-6 rounded-xl bg-stone-900/40 border border-stone-800/80 shadow-xs hover:border-stone-700/80 transition group">
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-medium text-stone-400">Active API Keys</span>
+          <div className="p-2 rounded-lg bg-persimmon-500/10 text-persimmon-400">
+            <KeyRound className="w-4 h-4" />
           </div>
-          <div className="p-2.5 rounded-xl bg-indigo-500/10 border border-indigo-500/20 text-indigo-400">
-            <KeyRound className="w-5 h-5" />
-          </div>
-        </Flex>
-        <div className="mt-3 pt-3 border-t border-slate-800/80 flex items-center justify-between text-xs text-slate-400">
-          <span>Key Quota Status</span>
-          <Badge size="xs" color="indigo">
-            Enforced
-          </Badge>
         </div>
-      </Card>
+        <div className="mt-4 flex items-baseline gap-2">
+          <span className="text-3xl font-bold tracking-tight text-stone-100 font-mono">
+            {stats.activeApiKeys}
+          </span>
+        </div>
+        <div className="mt-3 pt-3 border-t border-stone-800/60 flex items-center justify-between text-xs text-stone-400">
+          <span>Key Quota Status</span>
+          <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+            Enforced
+          </span>
+        </div>
+      </div>
     </div>
   );
 }

@@ -412,8 +412,8 @@ export function ApiKeyTable({ initialKeys }: ApiKeyTableProps): JSX.Element {
                             <Clock className="w-3 h-3 text-slate-400" />
                             <span>{formatLastUsed(apiKey.lastUsedAt)}</span>
                           </div>
-                          <div className="text-[11px] text-slate-400 font-mono">
-                            Created {formatDate(apiKey.createdAt)}
+                          <div className="text-[11px] text-slate-400 font-mono" suppressHydrationWarning>
+                            <span suppressHydrationWarning>Created {formatDate(apiKey.createdAt)}</span>
                           </div>
                         </div>
                       </TableCell>
