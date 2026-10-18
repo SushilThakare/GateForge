@@ -1,0 +1,257 @@
+# =============================================================================
+# GateForge Continuous Integration & Deployment (CI/CD) Workflow
+#
+# Architecture Context:
+#   Automates quality gates and deployment checks on every git push and PR:
+#   1. Static Analysis: ESLint code style & Next.js core web vitals
+#   2. Static Typing: TypeScript compilation check across all workspace tsconfigs
+#   3. Unit & Algorithm Tests: Rate limiter facades, Lua scripts, and Zod schemas
+#   4. Full-Lifecycle Integration Tests: Spun up against live Postgres 16 & Redis 7 services
+#   5. Docker Verification: Validates multi-stage production builds for all 3 microservices
+#   6. Continuous Delivery: Optional zero-downtime deployment trigger on main branch
+# =============================================================================
+
+name: GateForge CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - main
+      - master
+      - develop
+  pull_request:
+    branches:
+      - main
+      - master
+      - develop
+  workflow_dispatch: # Allows manual trigger from the GitHub Actions web UI
+
+# Concurrency group ensures outdated runs on the same branch/PR are cancelled automatically,
+# saving GitHub Actions compute minutes and eliminating race conditions during PR updates.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: '20'
+  POSTGRES_USER: gateforge_user
+  POSTGRES_PASSWORD: gateforge_password
+  POSTGRES_DB: gateforge_db
+  REDIS_PORT: 6379
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Job 1: Static Analysis & Type Checking (Fail-Fast)
+  # ─────────────────────────────────────────────────────────────────────────────
+  lint-and-typecheck:
+    name: Code Quality & Type Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install Monorepo Dependencies
+        run: npm ci
+
+      - name: Generate Prisma Client Types
+        # Prisma Client must be generated before typechecking because gateway, worker,
+        # and dashboard code import types directly from @prisma/client.
+        run: npx prisma generate
+
+      - name: Run ESLint
+        run: npm run lint
+
+      - name: Run TypeScript Strict Type Check
+        # Runs tsc --noEmit across gateway, worker, and dashboard packages
+        run: npm run typecheck
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Job 2: Unit & Rate-Limiter Tests
+  # ─────────────────────────────────────────────────────────────────────────────
+  unit-tests:
+    name: Unit & Algorithm Tests
+    runs-on: ubuntu-latest
+    # Redis service container provides the live in-memory store required by
+    # sliding window and token bucket algorithm tests.
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Generate Prisma Client Types
+        run: npx prisma generate
+
+      - name: Run Unit Tests
+        env:
+          REDIS_URL: redis://localhost:6379
+          NODE_ENV: test
+        run: npm run test:unit
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Job 3: Full-Lifecycle Integration Tests (with PostgreSQL & Redis services)
+  # ─────────────────────────────────────────────────────────────────────────────
+  integration-tests:
+    name: Full Lifecycle Integration Tests
+    runs-on: ubuntu-latest
+    needs: [lint-and-typecheck]
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: ${{ env.POSTGRES_USER }}
+          POSTGRES_PASSWORD: ${{ env.POSTGRES_PASSWORD }}
+          POSTGRES_DB: ${{ env.POSTGRES_DB }}
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Generate Prisma Client
+        run: npx prisma generate
+
+      - name: Push Database Schema to PostgreSQL Container
+        # Synchronizes tables, enums, and foreign key relations before tests execute
+        env:
+          DATABASE_URL: postgresql://${{ env.POSTGRES_USER }}:${{ env.POSTGRES_PASSWORD }}@localhost:5432/${{ env.POSTGRES_DB }}?schema=public
+        run: npx prisma db push
+
+      - name: Run Integration Tests
+        env:
+          NODE_ENV: test
+          DATABASE_URL: postgresql://${{ env.POSTGRES_USER }}:${{ env.POSTGRES_PASSWORD }}@localhost:5432/${{ env.POSTGRES_DB }}?schema=public
+          REDIS_URL: redis://localhost:6379
+          GATEWAY_SECRET: test-gateway-signing-secret
+          GATEWAY_ADMIN_KEY: gf_admin_dashboard_key
+        run: npm run test:integration
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Job 4: Multi-Stage Docker Image Build Verification
+  # ─────────────────────────────────────────────────────────────────────────────
+  docker-build:
+    name: Docker Image Builds
+    runs-on: ubuntu-latest
+    needs: [lint-and-typecheck, unit-tests, integration-tests]
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Gateway Production Image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: packages/gateway/Dockerfile
+          push: false
+          tags: gateforge/gateway:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build Worker Production Image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: packages/worker/Dockerfile
+          push: false
+          tags: gateforge/worker:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build Dashboard Production Image (Next.js Standalone)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: packages/dashboard/Dockerfile
+          push: false
+          tags: gateforge/dashboard:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Job 5: Continuous Deployment (CD) — Optional Render / Railway Trigger
+  # ─────────────────────────────────────────────────────────────────────────────
+  deploy:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: [docker-build]
+    # Only deploy when code is pushed directly to the main branch
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    # Environment variables defined at job-level so step `if` conditions can inspect them
+    env:
+      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+      RENDER_DEPLOY_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK }}
+    steps:
+      - name: Deploy to Railway (if token configured)
+        if: env.RAILWAY_TOKEN != ''
+        run: |
+          echo "Deploying GateForge services to Railway..."
+          npm install -g @railway/cli
+          railway up --detach
+
+      - name: Trigger Render Deploy Hook (if webhook configured)
+        if: env.RENDER_DEPLOY_HOOK != ''
+        run: |
+          echo "Triggering Render webhook deploy..."
+          curl -X POST "${{ secrets.RENDER_DEPLOY_HOOK }}"
+
+      - name: Deployment Fallback Summary
+        if: env.RAILWAY_TOKEN == '' && env.RENDER_DEPLOY_HOOK == ''
+        run: |
+          echo "================================================================="
+          echo "ℹ️  Continuous Deployment Step: Ready for configuration."
+          echo "To enable automated deployments on main branch merge:"
+          echo "  - Add RAILWAY_TOKEN to Repository Secrets (Settings -> Secrets)"
+          echo "  - OR add RENDER_DEPLOY_HOOK to Repository Secrets"
+          echo "================================================================="

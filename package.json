@@ -11,6 +11,11 @@
     "dev:worker": "npm run dev --workspace=packages/worker",
     "dev:dashboard": "npm run dev --workspace=packages/dashboard",
     "build": "npx prisma generate && npm run build --workspaces",
+    "lint": "npm run lint --workspace=packages/dashboard",
+    "typecheck": "tsc --noEmit --project packages/gateway/tsconfig.json && tsc --noEmit --project packages/worker/tsconfig.json && tsc --noEmit --project packages/dashboard/tsconfig.json",
+    "test": "npm test --workspace=packages/gateway",
+    "test:unit": "npm test --workspace=packages/gateway -- tests/slidingWindow.test.ts tests/tokenBucket.test.ts tests/rateLimiter.test.ts tests/logRoutes.test.ts",
+    "test:integration": "npm test --workspace=packages/gateway -- tests/integration/fullLifecycle.integration.test.ts",
     "db:generate": "npx prisma generate",
     "db:push": "npx prisma db push",
     "db:seed": "npx prisma db seed"
